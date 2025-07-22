@@ -2,6 +2,10 @@ import argparse
 import logging
 import time
 from typing import List, Optional
+from collections import Counter
+import re
+from collections import Counter
+import re
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -106,6 +110,15 @@ def extract_domain(url: str) -> str:
     return '.'.join(part for part in [ext.domain, ext.suffix] if part)
 
 
+def analyze_common_phrases(texts: List[str], top_n: int = 10) -> List[tuple]:
+    """Return top common words across all texts."""
+    tokens: List[str] = []
+    for text in texts:
+        tokens.extend(re.findall(r'\b\w+\b', text.lower()))
+    counter = Counter(tokens)
+    return counter.most_common(top_n)
+
+
 def main():
     parser = argparse.ArgumentParser(description='\u30a6\u30a7\u30d6\u3092\u691c\u7d22\u3057\u60c5\u5831\u3092\u62bd\u51fa\u3059\u308b\u30c4\u30fc\u30eb')
     parser.add_argument('keyword', help='\u691c\u7d22\u30ad\u30fc\u30ef\u30fc\u30c9')
@@ -122,6 +135,7 @@ def main():
 
     results = []
     robots_cache = {}
+    all_texts: List[str] = []
     for url in urls:
         html = fetch_html(session, url)
         if not html:
@@ -131,6 +145,7 @@ def main():
         domain = extract_domain(url)
         if domain not in robots_cache:
             robots_cache[domain] = robots_exists(session, url)
+        all_texts.append(data['text'])
         results.append({
             'url': url,
             'domain': domain,
@@ -150,6 +165,10 @@ def main():
             print("robots.txt:\u3000", "\u3042\u308a" if item['robots'] else "\u306a\u3057")
             print("\u6587\u672c:\u3000", item['text'])
             print("-" * 80)
+        counts = analyze_common_phrases(all_texts)
+        print("\u5171\u901a\u30ef\u30fc\u30c9\u51fa\u73fe\u56de\u6570:")
+        for word, cnt in counts:
+            print(f"{word}: {cnt}")
     else:
         print("\u7d50\u679c\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f")
 
