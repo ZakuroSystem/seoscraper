@@ -2,6 +2,7 @@ import argparse
 import logging
 import time
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 import requests
@@ -42,10 +43,23 @@ def fetch_html(session: requests.Session, url: str, timeout: int = 10) -> Option
         return None
 
 
+def robots_exists(session: requests.Session, url: str) -> bool:
+    """Return True if robots.txt exists for the URL's domain."""
+    parsed = urlparse(url)
+    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    try:
+        resp = session.get(robots_url, timeout=5)
+        return resp.status_code == 200
+    except Exception as e:
+        logging.info("robots.txt fetch failed for %s: %s", robots_url, e)
+        return False
+
+
 def parse_html(html: str) -> dict:
     soup = BeautifulSoup(html, 'html.parser')
     text = ' '.join(p.get_text(separator=' ', strip=True) for p in soup.find_all('p'))
     published_time = None
+    seo_title = None
 
     time_selectors = [
         ('meta', {'property': 'article:published_time'}),
@@ -65,9 +79,25 @@ def parse_html(html: str) -> dict:
             published_time = el['datetime']
     if not published_time:
         published_time = 'N/A'
+
+    title_selectors = [
+        ('meta', {'property': 'og:title'}),
+        ('meta', {'name': 'title'}),
+        ('meta', {'name': 'twitter:title'})
+    ]
+    for tag, attrs in title_selectors:
+        el = soup.find(tag, attrs=attrs)
+        if el and el.get('content'):
+            seo_title = el['content']
+            break
+    if not seo_title and soup.title:
+        seo_title = soup.title.get_text(strip=True)
+    if not seo_title:
+        seo_title = 'N/A'
     return {
         'text': text,
-        'published_time': published_time
+        'published_time': published_time,
+        'title': seo_title
     }
 
 
@@ -91,6 +121,7 @@ def main():
     session = create_session()
 
     results = []
+    robots_cache = {}
     for url in urls:
         html = fetch_html(session, url)
         if not html:
@@ -98,11 +129,15 @@ def main():
             continue
         data = parse_html(html)
         domain = extract_domain(url)
+        if domain not in robots_cache:
+            robots_cache[domain] = robots_exists(session, url)
         results.append({
             'url': url,
             'domain': domain,
             'published_time': data['published_time'],
-            'text': data['text'][:args.chars]
+            'title': data['title'],
+            'text': data['text'][:args.chars],
+            'robots': robots_cache[domain]
         })
         time.sleep(args.delay)
 
@@ -111,6 +146,8 @@ def main():
             print("URL:", item['url'])
             print("\u30c9\u30e1\u30a4\u30f3:", item['domain'])
             print("\u516c\u958b\u65e5:\u3000", item['published_time'])
+            print("SEO\u30bf\u30a4\u30c8\u30eb:", item['title'])
+            print("robots.txt:\u3000", "\u3042\u308a" if item['robots'] else "\u306a\u3057")
             print("\u6587\u672c:\u3000", item['text'])
             print("-" * 80)
     else:
