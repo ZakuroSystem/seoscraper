@@ -10,10 +10,10 @@ Install dependencies (Python 3.12 or compatible is recommended):
 pip install -r requirements.txt
 ```
 
-Run the scraper with a keyword. Optionally specify the number of results with `-n`:
+Run the scraper with a keyword. Optionally specify the number of results with `-n` and the delay between requests with `--delay`:
 
 ```bash
-python scraper.py "openai" -n 3
+python scraper.py "openai" -n 3 --delay 1.5
 ```
 
 The tool prints each URL, its domain, the detected publish time and the first 500 characters of paragraph text.
