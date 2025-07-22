@@ -1,6 +1,7 @@
 import argparse
 import logging
 from typing import List, Optional
+
 from bs4 import BeautifulSoup
 import requests
 from requests.adapters import HTTPAdapter
@@ -9,15 +10,23 @@ from googlesearch import search
 import tldextract
 
 
+def create_session() -> requests.Session:
+    """Return a requests session with retry and user-agent."""
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+    return session
+
+
+
 def get_search_results(query: str, num_results: int) -> List[str]:
     return list(search(query, num_results=num_results))
 
 
-def fetch_html(url: str, timeout: int = 10) -> Optional[str]:
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-    session.mount('http://', HTTPAdapter(max_retries=retries))
-    session.mount('https://', HTTPAdapter(max_retries=retries))
+def fetch_html(session: requests.Session, url: str, timeout: int = 10) -> Optional[str]:
     try:
         response = session.get(url, timeout=timeout)
         response.raise_for_status()
@@ -60,10 +69,11 @@ def main():
 
     logging.info('Searching for "%s"', args.keyword)
     urls = get_search_results(args.keyword, args.num_results)
+    session = create_session()
 
     results = []
     for url in urls:
-        html = fetch_html(url)
+        html = fetch_html(session, url)
         if not html:
             continue
         data = parse_html(html)
@@ -75,12 +85,15 @@ def main():
             'text': data['text'][:500]
         })
 
-    print("\nResults:\n")
-    for r in results:
-        print(f"URL: {r['url']}")
-        print(f"Domain: {r['domain']}")
-        print(f"Published: {r['published_time']}")
-        print(f"Text: {r['text'][:500]}\n")
+    if results:
+        for item in results:
+            print("URL:", item['url'])
+            print("Domain:", item['domain'])
+            print("Published:", item['published_time'])
+            print("Text:", item['text'])
+            print("-" * 80)
+    else:
+        print("No results fetched.")
 
 
 if __name__ == '__main__':

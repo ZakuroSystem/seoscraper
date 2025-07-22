@@ -17,3 +17,12 @@ python scraper.py "openai" -n 3
 ```
 
 The tool prints each URL, its domain, the detected publish time and the first 500 characters of paragraph text.
+
+Example output:
+
+```text
+URL: https://en.wikipedia.org/wiki/OpenAI
+Domain: wikipedia.org
+Published: N/A
+Text: OpenAI, Inc. is an American artificial intelligence (AI) organization...
+```
