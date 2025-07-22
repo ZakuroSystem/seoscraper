@@ -1,28 +1,28 @@
 # seoscraper
 
-Simple CLI tool to search the web and extract article information.
+キーワードを指定して検索し、記事情報を取得するシンプルな CLI ツールです。
 
-## Usage
+## 使い方
 
-Install dependencies (Python 3.12 or compatible is recommended):
+Python 3.12 など互換バージョンで動作します。まず依存パッケージをインストールしてください。
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Run the scraper with a keyword. Optionally specify the number of results with `-n` and the delay between requests with `--delay`:
+以下のように実行します。`-n` で取得する件数、`--delay` でリクエスト間の待ち時間、`--chars` で本文の表示文字数を変更できます（デフォルト 1000 文字）。
 
 ```bash
-python scraper.py "openai" -n 3 --delay 1.5
+python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 ```
 
-The tool prints each URL, its domain, the detected publish time and the first 500 characters of paragraph text.
+実行結果には URL、ドメイン、公開日時、本文抜粋が表示されます。
 
-Example output:
+例:
 
 ```text
 URL: https://en.wikipedia.org/wiki/OpenAI
-Domain: wikipedia.org
-Published: N/A
-Text: OpenAI, Inc. is an American artificial intelligence (AI) organization...
+ドメイン: wikipedia.org
+公開日: N/A
+本文: OpenAI, Inc. は米国の人工知能 (AI) ...
 ```

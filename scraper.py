@@ -77,15 +77,16 @@ def extract_domain(url: str) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Search and scrape web pages.')
-    parser.add_argument('keyword', help='Keyword to search for')
-    parser.add_argument('-n', '--num-results', type=int, default=10, help='Number of results to fetch')
-    parser.add_argument('--delay', type=float, default=1.0, help='Delay between requests in seconds')
+    parser = argparse.ArgumentParser(description='\u30a6\u30a7\u30d6\u3092\u691c\u7d22\u3057\u60c5\u5831\u3092\u62bd\u51fa\u3059\u308b\u30c4\u30fc\u30eb')
+    parser.add_argument('keyword', help='\u691c\u7d22\u30ad\u30fc\u30ef\u30fc\u30c9')
+    parser.add_argument('-n', '--num-results', type=int, default=10, help='\u53d6\u5f97\u3059\u308bURL\u306e\u4ef6\u6570')
+    parser.add_argument('--delay', type=float, default=1.0, help='\u30ea\u30af\u30a8\u30b9\u30c8\u306e\u9593\u9694(\u79d2)')
+    parser.add_argument('--chars', type=int, default=1000, help='\u8868\u793a\u3059\u308b\u6587\u5b57\u6570')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-    logging.info('Searching for "%s"', args.keyword)
+    logging.info('\u300c%s\u300d\u3092\u691c\u7d22\u4e2d', args.keyword)
     urls = get_search_results(args.keyword, args.num_results, args.delay)
     session = create_session()
 
@@ -101,19 +102,19 @@ def main():
             'url': url,
             'domain': domain,
             'published_time': data['published_time'],
-            'text': data['text'][:500]
+            'text': data['text'][:args.chars]
         })
         time.sleep(args.delay)
 
     if results:
         for item in results:
             print("URL:", item['url'])
-            print("Domain:", item['domain'])
-            print("Published:", item['published_time'])
-            print("Text:", item['text'])
+            print("\u30c9\u30e1\u30a4\u30f3:", item['domain'])
+            print("\u516c\u958b\u65e5:\u3000", item['published_time'])
+            print("\u6587\u672c:\u3000", item['text'])
             print("-" * 80)
     else:
-        print("No results fetched.")
+        print("\u7d50\u679c\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f")
 
 
 if __name__ == '__main__':
