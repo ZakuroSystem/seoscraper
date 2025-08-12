@@ -230,15 +230,43 @@ def extract_domain(url: str) -> str:
 
 
 # =========================
+# 除外文字（txt）の読み込み
+# =========================
+def load_exclude_chars(path: Optional[str]) -> Tuple[Set[str], Optional[Dict[int, None]]]:
+    """
+    UTF-8 (BOM可) のテキストファイルから除外文字集合を作成。
+    - 改行(\n, \r)は無視
+    - ファイル中に現れる各文字を 1 文字単位で除外対象にする
+    - 返り値は（除外集合, str.translate 用の削除テーブル）
+    """
+    if not path:
+        return set(), None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = f.read()
+        chars = {ch for ch in data if ch not in ("\n", "\r")}
+        if not chars:
+            logging.info("Exclude-chars file is empty: %s", path)
+            return set(), None
+        delete_table = str.maketrans("", "", "".join(sorted(chars)))
+        logging.info("Loaded exclude chars: %d from %s", len(chars), path)
+        return chars, delete_table
+    except Exception as e:
+        logging.error("Failed to load exclude chars file %s: %s", path, e)
+        return set(), None
+
+
+# =========================
 # 共通判定（トークナイザ不使用 / 3～12文字・最長一致優先）
 # =========================
 _PRESENT_CHAR = re.compile(r'[A-Za-z0-9\u3040-\u30FF\u4E00-\u9FFF]')
 
-def _normalize_for_substrings(s: str) -> str:
-    """空白を一つに圧縮し、前後の空白を除去（判定強化・ノイズ低減）。"""
+def _normalize_for_substrings(s: str, remove_trans: Optional[Dict[int, None]] = None) -> str:
+    """除外文字の削除 → 連続空白を1つに圧縮 → 前後の空白を除去。"""
     if not s:
         return ""
-    # 改行やタブをスペースに、連続空白を1つに
+    if remove_trans:
+        s = s.translate(remove_trans)
     s = re.sub(r'\s+', ' ', s)
     return s.strip()
 
@@ -253,25 +281,18 @@ def _iter_substrings(s: str, min_len: int, max_len: int) -> Iterable[str]:
             if _PRESENT_CHAR.search(sub):
                 yield sub
 
-def common_substrings_rank(
-    texts: List[str],
+def common_substrings_rank_from_norm(
+    norm_texts: List[str],
     min_len: int = 3,
     max_len: int = 12,
-    analyze_chars: int = 5000,
     top_k: int = 15
 ) -> List[Tuple[str, int]]:
     """
-    複数ドキュメント間の共通部分文字列を集計。
-    - 3〜12文字の一致のみ対象
-    - 各ドキュメント内では重複カウントしない（出現ドキュメント数ベース）
-    - 同一ドキュメント集合で包含関係がある場合、最長一致を優先して短い一致を除外
-    - 最終ランキングは出現ドキュメント数 desc → 長さ desc → 文字列 asc
+    すでに正規化済み（除外適用＆空白圧縮済み＆必要なら切り詰め済み）の本文配列から
+    共通部分文字列を抽出（最長一致優先）。
     """
-    # ドキュメントID集合での出現マップ
     sub_to_docs: Dict[str, Set[int]] = defaultdict(set)
-
-    for doc_id, raw in enumerate(texts):
-        s = _normalize_for_substrings(raw)[:analyze_chars]
+    for doc_id, s in enumerate(norm_texts):
         if not s:
             continue
         seen_in_doc: Set[str] = set()
@@ -281,44 +302,67 @@ def common_substrings_rank(
             seen_in_doc.add(sub)
             sub_to_docs[sub].add(doc_id)
 
-    # 出現が2ドキュメント以上のもののみ対象（"共通"）
     grouped: Dict[frozenset, List[str]] = defaultdict(list)
     for sub, docs in sub_to_docs.items():
         if len(docs) >= 2:
             grouped[frozenset(docs)].append(sub)
 
-    # 同一ドキュメント集合ごとに最長一致優先で短い一致を除外
     filtered: List[Tuple[str, int]] = []
     for docset, subs in grouped.items():
         subs.sort(key=lambda x: (-len(x), x))  # 長い順 → 同長は辞書順
         kept: List[str] = []
         for sub in subs:
-            # 既に採用済みのより長い一致に完全に含まれるならスキップ
             if any(ks.find(sub) != -1 for ks in kept):
                 continue
             kept.append(sub)
         for sub in kept:
             filtered.append((sub, len(docset)))
 
-    # ランキング整列：出現ドキュメント数 desc → 長さ desc → 文字列 asc
     filtered.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
     return filtered[:top_k]
 
-
-def rank_equal_titles(titles: List[str], top_k: int = 15) -> List[Tuple[str, int]]:
+def rank_equal_titles_from_norm(norm_titles: List[str], top_k: int = 15) -> List[Tuple[str, int]]:
     """
-    SEOタイトルの完全一致ランキング。
-    - 余白をトリムした完全一致で集計
-    - 出現回数が2以上のものをランキング（検索で得た集合内のみ）
+    すでに正規化済み（除外適用＋空白正規化済み）のSEOタイトル配列から完全一致ランキング。
     """
-    counter = Counter(t.strip() for t in titles if t and t.strip())
+    counter = Counter(t for t in norm_titles if t)
     items = [(t, c) for t, c in counter.items() if c >= 2]
     items.sort(key=lambda x: (-x[1], -len(x[0]), x[0]))
     return items[:top_k]
 
+def common_substrings_rank(
+    texts: List[str],
+    min_len: int = 3,
+    max_len: int = 12,
+    analyze_chars: int = 5000,
+    top_k: int = 15,
+    remove_trans: Optional[Dict[int, None]] = None
+) -> List[Tuple[str, int]]:
+    """（オンライン計算用）正規化→切り詰め→共通部分文字列抽出。"""
+    norm_texts = [_normalize_for_substrings(t, remove_trans)[:analyze_chars] for t in texts]
+    return common_substrings_rank_from_norm(norm_texts, min_len=min_len, max_len=max_len, top_k=top_k)
+
+def rank_equal_titles(
+    titles: List[str],
+    top_k: int = 15,
+    remove_trans: Optional[Dict[int, None]] = None
+) -> List[Tuple[str, int]]:
+    """（オンライン計算用）正規化→完全一致ランキング。"""
+    normed = []
+    for t in titles:
+        if not t:
+            continue
+        s = t
+        if remove_trans:
+            s = s.translate(remove_trans)
+        s = re.sub(r'\s+', ' ', s).strip()
+        if s:
+            normed.append(s)
+    return rank_equal_titles_from_norm(normed, top_k=top_k)
+
 
 # =========================
-# 結果書き出し
+# 結果・分析ファイルの書き出し／読み込み
 # =========================
 def write_results_csv(path: str, rows: List[Dict]):
     fieldnames = ["url", "domain", "published_time", "title", "robots", "text"]
@@ -336,12 +380,46 @@ def write_results_json(path: str, rows: List[Dict], meta: Dict):
     logging.info("Results JSON written: %s", path)
 
 
+def save_analysis(
+    path: str,
+    meta: Dict,
+    norm_texts: List[str],
+    norm_titles: List[str],
+    results_rows: List[Dict]
+):
+    """
+    再集計専用の“分析ファイル”を保存。
+    - norm_texts: 除外適用・空白正規化・analyze_charsで切り詰め済みの本文
+    - norm_titles: 除外適用・空白正規化済みタイトル
+    - results_rows: URL/タイトル等の表示用
+    """
+    data = {
+        "version": 1,
+        "meta": meta,
+        "norm_texts": norm_texts,
+        "norm_titles": norm_titles,
+        "results": results_rows
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    logging.info("Analysis file written: %s", path)
+
+
+def load_analysis(path: str) -> Dict:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if "version" not in data:
+        data["version"] = 1
+    logging.info("Analysis file loaded: %s (version=%s)", path, data.get("version"))
+    return data
+
+
 # =========================
 # メイン
 # =========================
 def main():
     parser = argparse.ArgumentParser(description='ウェブを検索し情報を抽出するツール')
-    parser.add_argument('keyword', help='検索キーワード')
+    parser.add_argument('keyword', nargs='?', help='検索キーワード（--analysis-load を使う場合は省略可）')
     parser.add_argument('-n', '--num-results', type=int, default=10, help='取得するURLの件数')
     parser.add_argument('--delay', type=float, default=1.0, help='リクエストの間隔(秒)')
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
@@ -356,6 +434,10 @@ def main():
     # 共通判定パラメータ
     parser.add_argument('--rank-k', type=int, default=15, help='ランキングの表示件数（共通本文サブ文字列 / 一致SEOタイトル）')
     parser.add_argument('--analyze-chars', type=int, default=5000, help='共通判定に用いる本文の先頭文字数（デフォルト5000）')
+    parser.add_argument('--exclude-chars-file', default=None, help='共通判定前に除去する文字の一覧テキストファイル（UTF-8/BOM可）。各文字をそのまま列挙（改行は無視）。')
+    # 分析ファイル
+    parser.add_argument('--analysis-save', default=None, help='正規化済みテキスト等を保存する分析ファイル(JSON)のパス')
+    parser.add_argument('--analysis-load', default=None, help='分析ファイル(JSON)を読み込みローカル再集計のみ行う（ネットワークアクセス無し）')
     # 互換（旧オプション）: --top-k が与えられたら --rank-k に流用
     parser.add_argument('--top-k', type=int, default=None, help='[互換] ランキング件数。指定時は --rank-k を上書き')
     args = parser.parse_args()
@@ -364,6 +446,81 @@ def main():
         args.rank_k = args.top_k
 
     setup_logging(args.log_file, args.log_level, args.log_max_bytes, args.log_backup_count)
+
+    # ============ 分析ファイルのロードモード（ローカル再集計） ============
+    if args.analysis_load:
+        data = load_analysis(args.analysis_load)
+
+        # 互換チェック（除外文字や analyze_chars が違う場合は警告。top-kだけ変更なら問題なし）
+        saved_meta = data.get("meta", {})
+        saved_excl = set(saved_meta.get("exclude_chars", []))
+        saved_analyze_chars = saved_meta.get("analyze_chars")
+        # 現在の除外ファイルを読み込んだ場合は一致比較
+        exclude_chars, remove_trans = load_exclude_chars(args.exclude_chars_file)
+        if exclude_chars and exclude_chars != saved_excl:
+            logging.warning("Exclude chars differ from analysis file. Recalc uses SAVED normalization.")
+        if args.analyze_chars and saved_analyze_chars and args.analyze_chars != saved_analyze_chars:
+            logging.warning("analyze_chars differs from analysis file. Recalc uses SAVED truncation.")
+
+        norm_texts = data.get("norm_texts", [])
+        norm_titles = data.get("norm_titles", [])
+        results = data.get("results", [])
+
+        # ローカル再集計（top-k 変更だけなら超高速）
+        common_subs = common_substrings_rank_from_norm(norm_texts, min_len=3, max_len=12, top_k=args.rank_k)
+        title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
+
+        logging.info("Re-aggregated locally from analysis file. rank_k=%d", args.rank_k)
+
+        # 結果JSONを書きたい場合は新たに出力
+        if args.results_json:
+            meta = {
+                "source": "analysis_load",
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "rank_k": args.rank_k,
+                "keyword": saved_meta.get("keyword"),
+                "analyze_chars": saved_meta.get("analyze_chars"),
+                "exclude_chars_count": len(saved_excl),
+                "common_substrings": common_subs,
+                "equal_seo_titles": title_ranks,
+            }
+            write_results_json(args.results_json, results, meta)
+
+        # 従来の出力
+        for item in results:
+            print("URL:", item['url'])
+            print("ドメイン:", item['domain'])
+            print("公開日:　", item['published_time'])
+            print("SEOタイトル:", item['title'])
+            print("robots.txt:　", "あり" if item['robots'] else "なし")
+            print("本文:　", item['text'])
+            print("-" * 80)
+
+        print(f"共通本文サブ文字列（3～12文字, 最長一致・上位{args.rank_k}）:")
+        if common_subs:
+            for sub, cnt in common_subs:
+                print(f"[{cnt}件 / {len(sub)}文字] {repr(sub)}")
+        else:
+            print("（該当なし）")
+
+        print(f"一致SEOタイトル（完全一致・上位{args.rank_k}）:")
+        if title_ranks:
+            for title, cnt in title_ranks:
+                print(f"[{cnt}件] {repr(title)}")
+        else:
+            print("（該当なし）")
+
+        logging.info("Finished (analysis-load mode). results=%d", len(results))
+        return
+
+    # ============ 通常モード（検索→取得→解析→保存） ============
+    if not args.keyword:
+        raise SystemExit("keyword が必要です（または --analysis-load を指定してください）")
+
+    # 除外文字の読み込み
+    exclude_chars, remove_trans = load_exclude_chars(args.exclude_chars_file)
+    if exclude_chars:
+        logging.info("Excluding %d characters in analysis.", len(exclude_chars))
 
     logging.info('検索開始 keyword="%s" num=%d', args.keyword, args.num_results)
     urls = get_search_results(args.keyword, args.num_results, args.delay)
@@ -404,18 +561,27 @@ def main():
         time.sleep(args.delay)
 
     if results:
+        # 正規化済み配列（分析ファイルにも保存）
+        norm_texts = [_normalize_for_substrings(t, remove_trans)[:args.analyze_chars] for t in all_texts]
+        norm_titles = []
+        for t in seo_titles:
+            if not t:
+                norm_titles.append("")
+                continue
+            s = t.translate(remove_trans) if remove_trans else t
+            s = re.sub(r'\s+', ' ', s).strip()
+            norm_titles.append(s)
+
         # 共通本文サブ文字列（3～12文字・最長一致優先）
-        common_subs = common_substrings_rank(
-            all_texts, min_len=3, max_len=12,
-            analyze_chars=args.analyze_chars, top_k=args.rank_k
+        common_subs = common_substrings_rank_from_norm(
+            norm_texts, min_len=3, max_len=12, top_k=args.rank_k
         )
         # SEOタイトルの完全一致ランキング
-        title_ranks = rank_equal_titles(seo_titles, top_k=args.rank_k)
+        title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
         logging.info("Summary: hits=%d, collected=%d, skipped=%d",
                      len(urls), len(results), skipped_total)
 
-        # ログ出力（ランキング）
         if common_subs:
             logging.info("Top %d COMMON SUBSTRINGS (len 3-12, longest-match):", len(common_subs))
             for sub, cnt in common_subs:
@@ -436,6 +602,7 @@ def main():
 
         if args.results_json:
             meta = {
+                "source": "fresh_crawl",
                 "keyword": args.keyword,
                 "num_results_requested": args.num_results,
                 "hits_total": len(urls),
@@ -443,11 +610,23 @@ def main():
                 "skipped": skipped_total,
                 "rank_k": args.rank_k,
                 "analyze_chars": args.analyze_chars,
+                "exclude_chars": sorted(list(exclude_chars)),
+                "exclude_chars_count": len(exclude_chars),
                 "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "common_substrings": common_subs,
                 "equal_seo_titles": title_ranks,
             }
             write_results_json(args.results_json, results, meta)
+
+        # 分析ファイル（ローカル再集計用）を保存
+        if args.analysis_save:
+            meta_for_analysis = {
+                "keyword": args.keyword,
+                "analyze_chars": args.analyze_chars,
+                "exclude_chars": sorted(list(exclude_chars)),
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            save_analysis(args.analysis_save, meta_for_analysis, norm_texts, norm_titles, results)
 
         # ====== コンソール出力（従来の結果一覧） ======
         for item in results:
