@@ -43,7 +43,8 @@ python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 ```bash
 python scraper.py "openai" -n 3 --delay 1.5 --chars 500 \
   --log-file scrape.log --log-level INFO \
-  --results-csv results.csv --results-json results.json
+  --results-csv results.csv --results-json results.json \
+  --rank-k 10 --analyze-chars 4000
 ```
 
 ### 出力例
