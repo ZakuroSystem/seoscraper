@@ -1,8 +1,19 @@
 # seoscraper
 
 キーワードを指定して検索し、記事情報を取得するシンプルな CLI ツールです。
+文字化け判定、完全一致による本文・SEOタイトルの共通判定、ログ出力機能も備えています。
 
-## 使い方
+## 特徴
+
+* Google 検索から記事 URL を取得
+* HTML を複数エンコード候補でデコードし、文字化けを自動判定
+* robots.txt の有無を確認
+* 公開日、SEOタイトル、本文の抜粋を取得
+* **本文・SEOタイトルの完全一致集計（共通テキストを上位表示）**
+* ログをコンソール・ファイルに出力（ローテーション対応）
+* 調査結果を CSV / JSON 形式で保存可能
+
+## インストール
 
 Python 3.12 など互換バージョンで動作します。まず依存パッケージをインストールしてください。
 
@@ -10,16 +21,32 @@ Python 3.12 など互換バージョンで動作します。まず依存パッ�
 pip install -r requirements.txt
 ```
 
-以下のように実行します。`-n` で取得する件数、`--delay` でリクエスト間の待ち時間、`--chars` で本文の表示文字数を変更できます（デフォルト 1000 文字）。robots.txt の有無と SEO タイトルも表示します。
+## 使い方
+
+基本的な実行例:
 
 ```bash
 python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 ```
 
-実行結果には URL、ドメイン、公開日時、SEO タイトル、robots.txt の有無、本文抜粋が表示されます。
-さらに、取得した記事から共通して現れる単語の出現回数も自動集計して最後に一覧表示されます。
+* `-n` : 取得件数（デフォルト 10）
+* `--delay` : リクエスト間隔（秒）
+* `--chars` : 本文の表示文字数（デフォルト 1000）
+* `--log-file` : ログファイルのパスを指定するとファイル出力（省略時はコンソールのみ）
+* `--log-level` : ログレベル (`DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL`)
+* `--results-csv` : 結果を CSV に保存
+* `--results-json` : 結果とメタ情報を JSON に保存
+* `--top-k` : 共通本文・共通タイトルの上位件数（デフォルト 15）
 
-例:
+### 実行例
+
+```bash
+python scraper.py "openai" -n 3 --delay 1.5 --chars 500 \
+  --log-file scrape.log --log-level INFO \
+  --results-csv results.csv --results-json results.json
+```
+
+### 出力例
 
 ```text
 URL: https://en.wikipedia.org/wiki/OpenAI
@@ -28,12 +55,22 @@ URL: https://en.wikipedia.org/wiki/OpenAI
 SEOタイトル: OpenAI - Wikipedia
 robots.txt: あり
 本文: OpenAI, Inc. は米国の人工知能 (AI) ...
+--------------------------------------------------------------------------------
+共通本文（完全一致）:
+[2件] 'OpenAI, Inc. は米国の人工知能 (AI) ...'
+共通SEOタイトル（完全一致）:
+[2件] 'OpenAI - Wikipedia'
 ```
 
-共通ワードの例:
+### ログ出力例（INFOレベル）
 
-```text
-openai: 3
-ai: 2
-research: 2
+```
+2025-08-12 15:20:01 INFO: 検索開始 keyword="openai" num=3
+2025-08-12 15:20:02 INFO: Search ok: openai (hits=3)
+2025-08-12 15:20:05 INFO: OK https://en.wikipedia.org/wiki/OpenAI | title="OpenAI - Wikipedia" robots=True
+2025-08-12 15:20:05 INFO: Summary: hits=3, collected=3, skipped=0
+2025-08-12 15:20:05 INFO: Top 15 COMMON BODY TEXTS:
+2025-08-12 15:20:05 INFO: [BODY 2] 'OpenAI, Inc. は米国の人工知能 (AI) ...'
+2025-08-12 15:20:05 INFO: Top 15 COMMON SEO TITLES:
+2025-08-12 15:20:05 INFO: [TITLE 2] 'OpenAI - Wikipedia'
 ```
