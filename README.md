@@ -37,6 +37,7 @@ python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 * `--results-csv` : 結果を CSV に保存
 * `--results-json` : 結果とメタ情報を JSON に保存
 * `--top-k` : 共通本文・共通タイトルの上位件数（デフォルト 15）
+* `--analyze-chars` : 分析する文字数を指定 (デフォルト5000)
 
 ### 実行例
 
