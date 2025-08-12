@@ -1,9 +1,12 @@
 import argparse
 import logging
+from logging.handlers import RotatingFileHandler
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict
 from collections import Counter
 import re
+import json
+import csv
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -14,8 +17,29 @@ from googlesearch import search
 import tldextract
 
 
+def setup_logging(log_file: Optional[str], level: str, max_bytes: int, backup_count: int):
+    """コンソールとファイルにログを出力（ローテーション対応）"""
+    logger = logging.getLogger()
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+
+    fmt = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+
+    ch = logging.StreamHandler()
+    ch.setFormatter(fmt)
+    ch.setLevel(getattr(logging, level.upper(), logging.INFO))
+    logger.addHandler(ch)
+
+    if log_file:
+        fh = RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backup_count, encoding='utf-8')
+        fh.setFormatter(fmt)
+        fh.setLevel(getattr(logging, level.upper(), logging.INFO))
+        logger.addHandler(fh)
+
+
 def create_session() -> requests.Session:
-    """Return a requests session with retry and user-agent."""
+    """リトライ付きHTTPセッション作成"""
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retries)
@@ -26,36 +50,33 @@ def create_session() -> requests.Session:
 
 
 def get_search_results(query: str, num_results: int, pause: float) -> List[str]:
-    """Return a list of URLs from Google search."""
+    """Google検索でURL一覧を取得"""
     try:
-        return list(search(query, num_results=num_results, sleep_interval=pause))
+        urls = list(search(query, num_results=num_results, sleep_interval=pause))
+        logging.info("Search ok: %s (hits=%d)", query, len(urls))
+        return urls
     except Exception as e:
         logging.error("Search failed: %s", e)
         return []
 
 
-# ---------- ここから: 文字化け対策 ----------
-
+# ---------- 文字化け対策 ----------
 _MOJIBAKE_PATTERNS = [
-    r"Ã.", r"Â.", r"â..", r"ðŸ", r"�",   # ラテン系/絵文字崩れ/置換文字
-    r"ã‚", r"ãƒ", r"ã„", r"ãŒ",          # UTF-8→SJIS/EUC 誤解読で出やすい
-    r"å.", r"æ.", r"œ"                   # よく見る æ/œ/å 系
+    r"Ã.", r"Â.", r"â..", r"ðŸ", r"�",
+    r"ã‚", r"ãƒ", r"ã„", r"ãŒ",
+    r"å.", r"æ.", r"œ"
 ]
 _MOJIBAKE_REGEX = re.compile("|".join(_MOJIBAKE_PATTERNS))
 
 def mojibake_score(text: str) -> float:
-    """ざっくり文字化けスコア（テキスト長で正規化）。0に近いほど正常。"""
     if not text:
         return 1.0
     hits = len(_MOJIBAKE_REGEX.findall(text))
-    # 置換文字（�）は重めにカウント
     hits += text.count("�") * 2
-    # 連続的に現れる場合を少し加点
     hits += len(re.findall(r"(Ã|Â|â){3,}", text)) * 3
     return hits / max(len(text), 1)
 
 def _find_meta_charset(head_bytes: bytes) -> Optional[str]:
-    """<meta charset=...> や http-equiv の宣言を先頭2KBから拾う"""
     head = head_bytes.decode("latin-1", errors="ignore")
     m = re.search(r'<meta[^>]+charset=["\']?\s*([\w\-:]+)\s*', head, flags=re.I)
     if m:
@@ -79,19 +100,15 @@ def _unique_clean(seq):
             out.append(s)
     return out
 
-def best_decode(response: requests.Response) -> tuple[str, str, float]:
-    """複数エンコーディングで試し、最も文字化けスコアが低いテキストを返す。"""
+def best_decode(response: requests.Response) -> Tuple[str, str, float]:
     raw = response.content
-    # 先頭だけ抽出（メタ検索用）
     head = raw[:2048]
     candidates = _unique_clean([
         "utf-8",
         response.encoding,
         getattr(response, "apparent_encoding", None),
         _find_meta_charset(head),
-        # 日本語でよく使われるもの
         "cp932", "shift_jis", "euc-jp", "iso-2022-jp",
-        # 欧文系
         "windows-1252", "latin-1"
     ])
     best_txt, best_enc, best_score = "", candidates[0] if candidates else "utf-8", 1e9
@@ -99,42 +116,40 @@ def best_decode(response: requests.Response) -> tuple[str, str, float]:
         try:
             txt = raw.decode(enc, errors="strict")
         except UnicodeDecodeError:
-            # 一部だけ読めるケースもあるので replace で試す
             txt = raw.decode(enc, errors="replace")
-        score = mojibake_score(txt[:20000])  # 先頭2万文字で十分
+        score = mojibake_score(txt[:20000])
+        logging.debug("Try decode enc=%s score=%.5f url=%s", enc, score, response.url)
         if score < best_score:
             best_txt, best_enc, best_score = txt, enc, score
-        # スコアが十分小さければ早期終了
         if best_score < 0.0015:
             break
+    logging.info("Decoded with enc=%s score=%.5f url=%s", best_enc, best_score, response.url)
     return best_txt, best_enc, best_score
 
 def fetch_html(session: requests.Session, url: str, timeout: int = 10) -> Optional[str]:
-    """複数エンコーディングで再デコードし、文字化けなら None を返す。"""
     try:
+        logging.debug("GET %s", url)
         resp = session.get(url, timeout=timeout)
         resp.raise_for_status()
         text, used_enc, score = best_decode(resp)
-        # しきい値: 経験的に 0.008 以上は読みにくいことが多い
         if score >= 0.008:
-            logging.info("Skip (mojibake likely, score=%.4f, enc=%s): %s", score, used_enc, url)
+            logging.warning("Skip (mojibake likely) score=%.4f enc=%s url=%s", score, used_enc, url)
             return None
-        # requests.text は不要（自前で最良を採用）
         return text
     except Exception as e:
         logging.warning("Failed to fetch %s: %s", url, e)
         return None
-
-# ---------- ここまで: 文字化け対策 ----------
+# ---------- 文字化け対策 ここまで ----------
 
 
 def robots_exists(session: requests.Session, url: str) -> bool:
-    """Return True if robots.txt exists for the URL's domain."""
     parsed = urlparse(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     try:
         resp = session.get(robots_url, timeout=5)
-        return resp.status_code == 200
+        ok = resp.status_code == 200
+        logging.debug("robots.txt %s -> %s", robots_url, "OK" if ok else resp.status_code)
+        return ok
     except Exception as e:
         logging.info("robots.txt fetch failed for %s: %s", robots_url, e)
         return False
@@ -179,6 +194,8 @@ def parse_html(html: str) -> dict:
         seo_title = soup.title.get_text(strip=True)
     if not seo_title:
         seo_title = 'N/A'
+
+    logging.debug("Parsed title=%s published=%s", seo_title, published_time)
     return {
         'text': text,
         'published_time': published_time,
@@ -191,13 +208,26 @@ def extract_domain(url: str) -> str:
     return '.'.join(part for part in [ext.domain, ext.suffix] if part)
 
 
-def analyze_common_phrases(texts: List[str], top_n: int = 10) -> List[tuple]:
-    """Return top common words across all texts."""
-    tokens: List[str] = []
-    for text in texts:
-        tokens.extend(re.findall(r'\b\w+\b', text.lower()))
-    counter = Counter(tokens)
+def analyze_common_exact(strings: List[str], top_n: int = 10) -> List[Tuple[str, int]]:
+    """文字列全体の完全一致でカウント"""
+    counter = Counter(s.strip() for s in strings if s and s.strip())
     return counter.most_common(top_n)
+
+
+def write_results_csv(path: str, rows: List[Dict]):
+    fieldnames = ["url", "domain", "published_time", "title", "robots", "text"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+    logging.info("Results CSV written: %s", path)
+
+
+def write_results_json(path: str, rows: List[Dict], meta: Dict):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"meta": meta, "results": rows}, f, ensure_ascii=False, indent=2)
+    logging.info("Results JSON written: %s", path)
 
 
 def main():
@@ -206,38 +236,89 @@ def main():
     parser.add_argument('-n', '--num-results', type=int, default=10, help='取得するURLの件数')
     parser.add_argument('--delay', type=float, default=1.0, help='リクエストの間隔(秒)')
     parser.add_argument('--chars', type=int, default=1000, help='表示する文字数')
+    parser.add_argument('--log-file', default=None, help='ログ出力先ファイル')
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'], help='ログレベル')
+    parser.add_argument('--log-max-bytes', type=int, default=5*1024*1024, help='ログローテーション閾値')
+    parser.add_argument('--log-backup-count', type=int, default=3, help='ログローテーション世代数')
+    parser.add_argument('--results-csv', default=None, help='結果CSVのパス')
+    parser.add_argument('--results-json', default=None, help='結果JSONのパス')
+    parser.add_argument('--top-k', type=int, default=15, help='共通項目の上位件数')
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    setup_logging(args.log_file, args.log_level, args.log_max_bytes, args.log_backup_count)
 
-    logging.info('「%s」を検索中', args.keyword)
+    logging.info('検索開始 keyword="%s" num=%d', args.keyword, args.num_results)
     urls = get_search_results(args.keyword, args.num_results, args.delay)
     session = create_session()
 
-    results = []
-    robots_cache = {}
+    results: List[Dict] = []
+    robots_cache: Dict[str, bool] = {}
     all_texts: List[str] = []
+    seo_titles: List[str] = []
+
+    skipped_total = 0
+
     for url in urls:
         html = fetch_html(session, url)
         if not html:
+            skipped_total += 1
             time.sleep(args.delay)
             continue
         data = parse_html(html)
         domain = extract_domain(url)
         if domain not in robots_cache:
             robots_cache[domain] = robots_exists(session, url)
+
         all_texts.append(data['text'])
-        results.append({
+        seo_titles.append(data['title'])
+
+        row = {
             'url': url,
             'domain': domain,
             'published_time': data['published_time'],
             'title': data['title'],
             'text': data['text'][:args.chars],
             'robots': robots_cache[domain]
-        })
+        }
+        results.append(row)
+
+        logging.info('OK %s | title="%s" robots=%s', url, data['title'], robots_cache[domain])
         time.sleep(args.delay)
 
     if results:
+        common_body = analyze_common_exact(all_texts, top_n=args.top_k)
+        common_titles = analyze_common_exact(seo_titles, top_n=args.top_k)
+
+        logging.info("Summary: hits=%d, collected=%d, skipped=%d",
+                     len(urls), len(results), skipped_total)
+
+        logging.info("Top %d COMMON BODY TEXTS:", args.top_k)
+        for text, cnt in common_body:
+            logging.info("[BODY %d] %r", cnt, text)
+
+        logging.info("Top %d COMMON SEO TITLES:", args.top_k)
+        for title, cnt in common_titles:
+            logging.info("[TITLE %d] %r", cnt, title)
+
+        robots_true = sum(1 for r in results if r["robots"])
+        robots_false = len(results) - robots_true
+        logging.info("robots.txt present: %d / absent: %d", robots_true, robots_false)
+
+        if args.results_csv:
+            write_results_csv(args.results_csv, results)
+        if args.results_json:
+            meta = {
+                "keyword": args.keyword,
+                "num_results_requested": args.num_results,
+                "hits_total": len(urls),
+                "collected": len(results),
+                "skipped": skipped_total,
+                "top_body_exact": common_body,
+                "top_title_exact": common_titles,
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            write_results_json(args.results_json, results, meta)
+
         for item in results:
             print("URL:", item['url'])
             print("ドメイン:", item['domain'])
@@ -246,12 +327,19 @@ def main():
             print("robots.txt:　", "あり" if item['robots'] else "なし")
             print("本文:　", item['text'])
             print("-" * 80)
-        counts = analyze_common_phrases(all_texts)
-        print("共通ワード出現回数:")
-        for word, cnt in counts:
-            print(f"{word}: {cnt}")
+
+        print("共通本文（完全一致）:")
+        for text, cnt in common_body:
+            print(f"[{cnt}件] {repr(text)}")
+
+        print("共通SEOタイトル（完全一致）:")
+        for title, cnt in common_titles:
+            print(f"[{cnt}件] {repr(title)}")
+
+        logging.info("Finished. results=%d", len(results))
     else:
         print("結果を取得できませんでした")
+        logging.warning("No results (skipped=%d)", skipped_total)
 
 
 if __name__ == '__main__':
