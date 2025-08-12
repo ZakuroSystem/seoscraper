@@ -2,8 +2,8 @@ import argparse
 import logging
 from logging.handlers import RotatingFileHandler
 import time
-from typing import List, Optional, Tuple, Dict
-from collections import Counter
+from typing import List, Optional, Tuple, Dict, Set, Iterable
+from collections import Counter, defaultdict
 import re
 import json
 import csv
@@ -17,8 +17,11 @@ from googlesearch import search
 import tldextract
 
 
+# =========================
+# ロギング
+# =========================
 def setup_logging(log_file: Optional[str], level: str, max_bytes: int, backup_count: int):
-    """コンソールとファイルにログを出力（ローテーション対応）"""
+    """コンソール + （任意）ファイルへログ出力。ファイルはローテーション付き。"""
     logger = logging.getLogger()
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     for h in list(logger.handlers):
@@ -38,8 +41,11 @@ def setup_logging(log_file: Optional[str], level: str, max_bytes: int, backup_co
         logger.addHandler(fh)
 
 
+# =========================
+# HTTP / 検索
+# =========================
 def create_session() -> requests.Session:
-    """リトライ付きHTTPセッション作成"""
+    """Return a requests session with retry and user-agent."""
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retries)
@@ -50,7 +56,7 @@ def create_session() -> requests.Session:
 
 
 def get_search_results(query: str, num_results: int, pause: float) -> List[str]:
-    """Google検索でURL一覧を取得"""
+    """Return a list of URLs from Google search."""
     try:
         urls = list(search(query, num_results=num_results, sleep_interval=pause))
         logging.info("Search ok: %s (hits=%d)", query, len(urls))
@@ -60,15 +66,18 @@ def get_search_results(query: str, num_results: int, pause: float) -> List[str]:
         return []
 
 
-# ---------- 文字化け対策 ----------
+# =========================
+# 文字化け対策（デコード最適化＋スキップ）
+# =========================
 _MOJIBAKE_PATTERNS = [
-    r"Ã.", r"Â.", r"â..", r"ðŸ", r"�",
-    r"ã‚", r"ãƒ", r"ã„", r"ãŒ",
+    r"Ã.", r"Â.", r"â..", r"ðŸ", r"�",   # ラテン系崩れ/置換文字
+    r"ã‚", r"ãƒ", r"ã„", r"ãŒ",          # UTF-8→SJIS/EUC 誤読
     r"å.", r"æ.", r"œ"
 ]
 _MOJIBAKE_REGEX = re.compile("|".join(_MOJIBAKE_PATTERNS))
 
 def mojibake_score(text: str) -> float:
+    """ざっくり文字化けスコア（0に近いほど正常）"""
     if not text:
         return 1.0
     hits = len(_MOJIBAKE_REGEX.findall(text))
@@ -76,7 +85,9 @@ def mojibake_score(text: str) -> float:
     hits += len(re.findall(r"(Ã|Â|â){3,}", text)) * 3
     return hits / max(len(text), 1)
 
+
 def _find_meta_charset(head_bytes: bytes) -> Optional[str]:
+    """<meta charset=...> / http-equiv を先頭2KBから拾う"""
     head = head_bytes.decode("latin-1", errors="ignore")
     m = re.search(r'<meta[^>]+charset=["\']?\s*([\w\-:]+)\s*', head, flags=re.I)
     if m:
@@ -88,7 +99,8 @@ def _find_meta_charset(head_bytes: bytes) -> Optional[str]:
         return m.group(1).lower()
     return None
 
-def _unique_clean(seq):
+
+def _unique_clean(seq: Iterable[Optional[str]]) -> List[str]:
     seen = set()
     out = []
     for s in seq:
@@ -100,7 +112,9 @@ def _unique_clean(seq):
             out.append(s)
     return out
 
+
 def best_decode(response: requests.Response) -> Tuple[str, str, float]:
+    """複数エンコーディングで試し、最も文字化けスコアが低いテキストを返す。"""
     raw = response.content
     head = raw[:2048]
     candidates = _unique_clean([
@@ -108,7 +122,9 @@ def best_decode(response: requests.Response) -> Tuple[str, str, float]:
         response.encoding,
         getattr(response, "apparent_encoding", None),
         _find_meta_charset(head),
+        # 日本語でよく使われるもの
         "cp932", "shift_jis", "euc-jp", "iso-2022-jp",
+        # 欧文系
         "windows-1252", "latin-1"
     ])
     best_txt, best_enc, best_score = "", candidates[0] if candidates else "utf-8", 1e9
@@ -126,7 +142,9 @@ def best_decode(response: requests.Response) -> Tuple[str, str, float]:
     logging.info("Decoded with enc=%s score=%.5f url=%s", best_enc, best_score, response.url)
     return best_txt, best_enc, best_score
 
+
 def fetch_html(session: requests.Session, url: str, timeout: int = 10) -> Optional[str]:
+    """複数エンコーディングで再デコードし、文字化けなら None を返す。"""
     try:
         logging.debug("GET %s", url)
         resp = session.get(url, timeout=timeout)
@@ -139,10 +157,13 @@ def fetch_html(session: requests.Session, url: str, timeout: int = 10) -> Option
     except Exception as e:
         logging.warning("Failed to fetch %s: %s", url, e)
         return None
-# ---------- 文字化け対策 ここまで ----------
 
 
+# =========================
+# HTML解析
+# =========================
 def robots_exists(session: requests.Session, url: str) -> bool:
+    """Return True if robots.txt exists for the URL's domain."""
     parsed = urlparse(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     try:
@@ -208,12 +229,97 @@ def extract_domain(url: str) -> str:
     return '.'.join(part for part in [ext.domain, ext.suffix] if part)
 
 
-def analyze_common_exact(strings: List[str], top_n: int = 10) -> List[Tuple[str, int]]:
-    """文字列全体の完全一致でカウント"""
-    counter = Counter(s.strip() for s in strings if s and s.strip())
-    return counter.most_common(top_n)
+# =========================
+# 共通判定（トークナイザ不使用 / 3～12文字・最長一致優先）
+# =========================
+_PRESENT_CHAR = re.compile(r'[A-Za-z0-9\u3040-\u30FF\u4E00-\u9FFF]')
+
+def _normalize_for_substrings(s: str) -> str:
+    """空白を一つに圧縮し、前後の空白を除去（判定強化・ノイズ低減）。"""
+    if not s:
+        return ""
+    # 改行やタブをスペースに、連続空白を1つに
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip()
+
+def _iter_substrings(s: str, min_len: int, max_len: int) -> Iterable[str]:
+    """長さ制約内の部分文字列をすべて生成（文字列そのまま、トークナイザ不使用）。"""
+    n = len(s)
+    max_len = min(max_len, n)
+    for L in range(min_len, max_len + 1):
+        for i in range(0, n - L + 1):
+            sub = s[i:i+L]
+            # 文字種フィルタ：完全な空白/記号列は除外（判定強化）
+            if _PRESENT_CHAR.search(sub):
+                yield sub
+
+def common_substrings_rank(
+    texts: List[str],
+    min_len: int = 3,
+    max_len: int = 12,
+    analyze_chars: int = 5000,
+    top_k: int = 15
+) -> List[Tuple[str, int]]:
+    """
+    複数ドキュメント間の共通部分文字列を集計。
+    - 3〜12文字の一致のみ対象
+    - 各ドキュメント内では重複カウントしない（出現ドキュメント数ベース）
+    - 同一ドキュメント集合で包含関係がある場合、最長一致を優先して短い一致を除外
+    - 最終ランキングは出現ドキュメント数 desc → 長さ desc → 文字列 asc
+    """
+    # ドキュメントID集合での出現マップ
+    sub_to_docs: Dict[str, Set[int]] = defaultdict(set)
+
+    for doc_id, raw in enumerate(texts):
+        s = _normalize_for_substrings(raw)[:analyze_chars]
+        if not s:
+            continue
+        seen_in_doc: Set[str] = set()
+        for sub in _iter_substrings(s, min_len, max_len):
+            if sub in seen_in_doc:
+                continue
+            seen_in_doc.add(sub)
+            sub_to_docs[sub].add(doc_id)
+
+    # 出現が2ドキュメント以上のもののみ対象（"共通"）
+    grouped: Dict[frozenset, List[str]] = defaultdict(list)
+    for sub, docs in sub_to_docs.items():
+        if len(docs) >= 2:
+            grouped[frozenset(docs)].append(sub)
+
+    # 同一ドキュメント集合ごとに最長一致優先で短い一致を除外
+    filtered: List[Tuple[str, int]] = []
+    for docset, subs in grouped.items():
+        subs.sort(key=lambda x: (-len(x), x))  # 長い順 → 同長は辞書順
+        kept: List[str] = []
+        for sub in subs:
+            # 既に採用済みのより長い一致に完全に含まれるならスキップ
+            if any(ks.find(sub) != -1 for ks in kept):
+                continue
+            kept.append(sub)
+        for sub in kept:
+            filtered.append((sub, len(docset)))
+
+    # ランキング整列：出現ドキュメント数 desc → 長さ desc → 文字列 asc
+    filtered.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
+    return filtered[:top_k]
 
 
+def rank_equal_titles(titles: List[str], top_k: int = 15) -> List[Tuple[str, int]]:
+    """
+    SEOタイトルの完全一致ランキング。
+    - 余白をトリムした完全一致で集計
+    - 出現回数が2以上のものをランキング（検索で得た集合内のみ）
+    """
+    counter = Counter(t.strip() for t in titles if t and t.strip())
+    items = [(t, c) for t, c in counter.items() if c >= 2]
+    items.sort(key=lambda x: (-x[1], -len(x[0]), x[0]))
+    return items[:top_k]
+
+
+# =========================
+# 結果書き出し
+# =========================
 def write_results_csv(path: str, rows: List[Dict]):
     fieldnames = ["url", "domain", "published_time", "title", "robots", "text"]
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -230,20 +336,32 @@ def write_results_json(path: str, rows: List[Dict], meta: Dict):
     logging.info("Results JSON written: %s", path)
 
 
+# =========================
+# メイン
+# =========================
 def main():
     parser = argparse.ArgumentParser(description='ウェブを検索し情報を抽出するツール')
     parser.add_argument('keyword', help='検索キーワード')
     parser.add_argument('-n', '--num-results', type=int, default=10, help='取得するURLの件数')
     parser.add_argument('--delay', type=float, default=1.0, help='リクエストの間隔(秒)')
-    parser.add_argument('--chars', type=int, default=1000, help='表示する文字数')
-    parser.add_argument('--log-file', default=None, help='ログ出力先ファイル')
+    parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
+    # ログ
+    parser.add_argument('--log-file', default=None, help='ログ出力先ファイル（指定しない場合はコンソールのみ）')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'], help='ログレベル')
-    parser.add_argument('--log-max-bytes', type=int, default=5*1024*1024, help='ログローテーション閾値')
-    parser.add_argument('--log-backup-count', type=int, default=3, help='ログローテーション世代数')
+    parser.add_argument('--log-max-bytes', type=int, default=5*1024*1024, help='ローテーション閾値（バイト）')
+    parser.add_argument('--log-backup-count', type=int, default=3, help='ローテーション世代数')
+    # 出力
     parser.add_argument('--results-csv', default=None, help='結果CSVのパス')
     parser.add_argument('--results-json', default=None, help='結果JSONのパス')
-    parser.add_argument('--top-k', type=int, default=15, help='共通項目の上位件数')
+    # 共通判定パラメータ
+    parser.add_argument('--rank-k', type=int, default=15, help='ランキングの表示件数（共通本文サブ文字列 / 一致SEOタイトル）')
+    parser.add_argument('--analyze-chars', type=int, default=5000, help='共通判定に用いる本文の先頭文字数（デフォルト5000）')
+    # 互換（旧オプション）: --top-k が与えられたら --rank-k に流用
+    parser.add_argument('--top-k', type=int, default=None, help='[互換] ランキング件数。指定時は --rank-k を上書き')
     args = parser.parse_args()
+
+    if args.top_k is not None:
+        args.rank_k = args.top_k
 
     setup_logging(args.log_file, args.log_level, args.log_max_bytes, args.log_backup_count)
 
@@ -286,26 +404,36 @@ def main():
         time.sleep(args.delay)
 
     if results:
-        common_body = analyze_common_exact(all_texts, top_n=args.top_k)
-        common_titles = analyze_common_exact(seo_titles, top_n=args.top_k)
+        # 共通本文サブ文字列（3～12文字・最長一致優先）
+        common_subs = common_substrings_rank(
+            all_texts, min_len=3, max_len=12,
+            analyze_chars=args.analyze_chars, top_k=args.rank_k
+        )
+        # SEOタイトルの完全一致ランキング
+        title_ranks = rank_equal_titles(seo_titles, top_k=args.rank_k)
 
         logging.info("Summary: hits=%d, collected=%d, skipped=%d",
                      len(urls), len(results), skipped_total)
 
-        logging.info("Top %d COMMON BODY TEXTS:", args.top_k)
-        for text, cnt in common_body:
-            logging.info("[BODY %d] %r", cnt, text)
+        # ログ出力（ランキング）
+        if common_subs:
+            logging.info("Top %d COMMON SUBSTRINGS (len 3-12, longest-match):", len(common_subs))
+            for sub, cnt in common_subs:
+                logging.info("[SUB %d] %r (len=%d)", cnt, sub, len(sub))
+        else:
+            logging.info("No common substrings found (len 3-12).")
 
-        logging.info("Top %d COMMON SEO TITLES:", args.top_k)
-        for title, cnt in common_titles:
-            logging.info("[TITLE %d] %r", cnt, title)
+        if title_ranks:
+            logging.info("Top %d EQUAL SEO TITLES:", len(title_ranks))
+            for title, cnt in title_ranks:
+                logging.info("[TITLE %d] %r", cnt, title)
+        else:
+            logging.info("No equal SEO titles (>=2 occurrences).")
 
-        robots_true = sum(1 for r in results if r["robots"])
-        robots_false = len(results) - robots_true
-        logging.info("robots.txt present: %d / absent: %d", robots_true, robots_false)
-
+        # ファイル書き出し
         if args.results_csv:
             write_results_csv(args.results_csv, results)
+
         if args.results_json:
             meta = {
                 "keyword": args.keyword,
@@ -313,12 +441,15 @@ def main():
                 "hits_total": len(urls),
                 "collected": len(results),
                 "skipped": skipped_total,
-                "top_body_exact": common_body,
-                "top_title_exact": common_titles,
-                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                "rank_k": args.rank_k,
+                "analyze_chars": args.analyze_chars,
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "common_substrings": common_subs,
+                "equal_seo_titles": title_ranks,
             }
             write_results_json(args.results_json, results, meta)
 
+        # ====== コンソール出力（従来の結果一覧） ======
         for item in results:
             print("URL:", item['url'])
             print("ドメイン:", item['domain'])
@@ -328,13 +459,19 @@ def main():
             print("本文:　", item['text'])
             print("-" * 80)
 
-        print("共通本文（完全一致）:")
-        for text, cnt in common_body:
-            print(f"[{cnt}件] {repr(text)}")
+        print(f"共通本文サブ文字列（3～12文字, 最長一致・上位{args.rank_k}）:")
+        if common_subs:
+            for sub, cnt in common_subs:
+                print(f"[{cnt}件 / {len(sub)}文字] {repr(sub)}")
+        else:
+            print("（該当なし）")
 
-        print("共通SEOタイトル（完全一致）:")
-        for title, cnt in common_titles:
-            print(f"[{cnt}件] {repr(title)}")
+        print(f"一致SEOタイトル（完全一致・上位{args.rank_k}）:")
+        if title_ranks:
+            for title, cnt in title_ranks:
+                print(f"[{cnt}件] {repr(title)}")
+        else:
+            print("（該当なし）")
 
         logging.info("Finished. results=%d", len(results))
     else:
