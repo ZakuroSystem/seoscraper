@@ -15,7 +15,7 @@ from scraper import (
 
 
 def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
-                 analyze_chars: int, max_common_ratio: float):
+                 analyze_chars: int, max_common_ratio: float, analysis_mode: str):
     """検索と解析を実行し結果を返す"""
     session = create_session()
     urls = get_search_results(keyword, num_results, delay)
@@ -50,6 +50,7 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
         analyze_chars=analyze_chars,
         top_k=rank_k,
         max_doc_ratio=max_common_ratio,
+        mode=analysis_mode,
     )
     title_ranks = rank_equal_titles(titles, top_k=rank_k)
     return results, common_subs, title_ranks
@@ -63,6 +64,7 @@ def main():
     analyze_chars = st.number_input("Analyze characters", min_value=100, max_value=20000, value=5000)
     rank_k = st.number_input("Top K", min_value=1, max_value=50, value=15)
     max_common_ratio = st.slider("Max common substring ratio", min_value=0.5, max_value=1.0, value=0.8)
+    analysis_mode = st.selectbox("Analysis mode", ["tiktoken", "char"], index=0)
 
     if st.button("Run") and keyword:
         with st.spinner("Scraping..."):
@@ -73,6 +75,7 @@ def main():
                 int(rank_k),
                 int(analyze_chars),
                 float(max_common_ratio),
+                analysis_mode,
             )
         if results:
             st.subheader("Results")

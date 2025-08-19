@@ -14,6 +14,7 @@
 * 調査結果を CSV / JSON 形式で保存可能
 * Streamlit ベースのリッチな Web UI に対応
 * 出現頻度が高すぎる共通サブ文字列を自動除外し分析の信頼性を向上
+* tiktoken によるトークン列分析モード（デフォルト）を搭載
 
 ## インストール
 
@@ -41,6 +42,7 @@ python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 * `--rank-k` : 共通本文・共通タイトルの上位件数（デフォルト 15）
 * `--analyze-chars` : 分析する文字数を指定 (デフォルト5000)
 * `--max-common-ratio` : 共通サブ文字列とみなす最大出現率（デフォルト 0.8）
+* `--analysis-mode` : 共通判定に用いる解析モード (`tiktoken` / `char`、デフォルト `tiktoken`)
 
 ### Web UI
 
