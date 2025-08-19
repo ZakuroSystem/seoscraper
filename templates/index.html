@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SEO Scraper</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <h1>SEO Scraper</h1>
+    <form method="post" class="form-card">
+      <div class="form-group">
+        <label for="keyword">Keyword</label>
+        <input type="text" id="keyword" name="keyword" value="{{ form.keyword if form else '' }}"/>
+      </div>
+      <div class="form-group">
+        <label for="num_results">Number of results</label>
+        <input type="number" id="num_results" name="num_results" value="{{ form.num_results if form else 10 }}"/>
+      </div>
+      <div class="form-group">
+        <label for="delay">Delay between requests (sec)</label>
+        <input type="number" step="0.1" id="delay" name="delay" value="{{ form.delay if form else 0.5 }}"/>
+      </div>
+      <div class="form-group">
+        <label for="workers">Workers</label>
+        <input type="number" id="workers" name="workers" value="{{ form.workers if form else 5 }}"/>
+      </div>
+      <div class="form-group">
+        <label for="analyze_chars">Analyze characters</label>
+        <input type="number" id="analyze_chars" name="analyze_chars" value="{{ form.analyze_chars if form else 5000 }}"/>
+      </div>
+      <div class="form-group">
+        <label for="rank_k">Top K</label>
+        <input type="number" id="rank_k" name="rank_k" value="{{ form.rank_k if form else 15 }}"/>
+      </div>
+      <div class="form-group">
+        <label for="max_common_ratio">Max common substring ratio</label>
+        <input type="number" step="0.1" id="max_common_ratio" name="max_common_ratio" value="{{ form.max_common_ratio if form else 0.8 }}"/>
+      </div>
+      <div class="form-group">
+        <label for="analysis_mode">Analysis mode</label>
+        <select id="analysis_mode" name="analysis_mode">
+          {% for m in ['tiktoken','char','hybrid'] %}
+            <option value="{{ m }}" {% if form and form.analysis_mode == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn">Run</button>
+    </form>
+
+    {% if results %}
+    <h2>Results</h2>
+    <table class="results-table">
+      <thead>
+        <tr>
+          <th>URL</th>
+          <th>Domain</th>
+          <th>Published Time</th>
+          <th>Title</th>
+          <th>Robots</th>
+          <th>Text</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
+          <td>{{ r.domain }}</td>
+          <td>{{ r.published_time }}</td>
+          <td>{{ r.title }}</td>
+          <td>{{ 'Yes' if r.robots else 'No' }}</td>
+          <td>{{ r.text }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>Common substrings</h2>
+    <ul class="substrings-list">
+      {% for sub, cnt in common_subs %}
+        <li>{{ cnt }} docs: {{ sub }}</li>
+      {% endfor %}
+    </ul>
+
+    <h2>Equal SEO titles</h2>
+    <ul class="titles-list">
+      {% for title, cnt in title_ranks %}
+        <li>{{ cnt }} docs: {{ title }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+</body>
+</html>

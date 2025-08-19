@@ -8,6 +8,8 @@ import re
 import json
 import csv
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from bs4 import BeautifulSoup
 import requests
@@ -15,6 +17,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from googlesearch import search
 import tldextract
+import tiktoken
 
 
 # =========================
@@ -257,7 +260,7 @@ def load_exclude_chars(path: Optional[str]) -> Tuple[Set[str], Optional[Dict[int
 
 
 # =========================
-# 共通判定（トークナイザ不使用 / 3～12文字・最長一致優先）
+# 共通判定（文字列/トークン単位, 3～12長・最長一致優先）
 # =========================
 _PRESENT_CHAR = re.compile(r'[A-Za-z0-9\u3040-\u30FF\u4E00-\u9FFF]')
 
@@ -270,6 +273,30 @@ def _normalize_for_substrings(s: str, remove_trans: Optional[Dict[int, None]] = 
     s = re.sub(r'\s+', ' ', s)
     return s.strip()
 
+_NOISE_PHRASES = {
+    "です", "です。", "ます", "ます。", "します", "します。",
+    "しています", "してい", "ている", "ください", "あります", "ありま",
+    "サービス", "事業所",
+}
+_KANA_ONLY = re.compile(r'^[\u3040-\u30FF]+$')
+
+def filter_common_phrases(items: List[Tuple[str, int]], keyword: str) -> List[Tuple[str, int]]:
+    """共通結果からノイズと検索語を除外"""
+    norm_kw = _normalize_for_substrings(keyword)
+    parts = [p for p in re.split(r'\s+', norm_kw) if p]
+    noise = set(parts) | _NOISE_PHRASES
+    filtered: List[Tuple[str, int]] = []
+    for sub, cnt in items:
+        if sub != sub.strip():
+            continue
+        s = sub.strip()
+        if not s or s in noise or s in norm_kw:
+            continue
+        if _KANA_ONLY.fullmatch(s) and len(s) <= 4:
+            continue
+        filtered.append((sub, cnt))
+    return filtered
+
 def _iter_substrings(s: str, min_len: int, max_len: int) -> Iterable[str]:
     """長さ制約内の部分文字列をすべて生成（文字列そのまま、トークナイザ不使用）。"""
     n = len(s)
@@ -277,21 +304,24 @@ def _iter_substrings(s: str, min_len: int, max_len: int) -> Iterable[str]:
     for L in range(min_len, max_len + 1):
         for i in range(0, n - L + 1):
             sub = s[i:i+L]
-            # 文字種フィルタ：完全な空白/記号列は除外（判定強化）
-            if _PRESENT_CHAR.search(sub):
+            # 文字種フィルタ：完全な空白/記号列・同一文字の繰り返しのみは除外
+            if _PRESENT_CHAR.search(sub) and len(set(sub)) > 1:
                 yield sub
 
 def common_substrings_rank_from_norm(
     norm_texts: List[str],
     min_len: int = 3,
     max_len: int = 12,
-    top_k: int = 15
+    top_k: int = 15,
+    max_doc_ratio: float = 0.8
 ) -> List[Tuple[str, int]]:
     """
     すでに正規化済み（除外適用＆空白圧縮済み＆必要なら切り詰め済み）の本文配列から
     共通部分文字列を抽出（最長一致優先）。
+    max_doc_ratio を超える頻出部分文字列は汎用的とみなして除外する。
     """
     sub_to_docs: Dict[str, Set[int]] = defaultdict(set)
+    total_docs = len(norm_texts)
     for doc_id, s in enumerate(norm_texts):
         if not s:
             continue
@@ -304,7 +334,7 @@ def common_substrings_rank_from_norm(
 
     grouped: Dict[frozenset, List[str]] = defaultdict(list)
     for sub, docs in sub_to_docs.items():
-        if len(docs) >= 2:
+        if len(docs) >= 2 and len(docs) / total_docs <= max_doc_ratio:
             grouped[frozenset(docs)].append(sub)
 
     filtered: List[Tuple[str, int]] = []
@@ -321,6 +351,104 @@ def common_substrings_rank_from_norm(
     filtered.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
     return filtered[:top_k]
 
+
+def _iter_token_sequences(tokens: List[int], min_len: int, max_len: int) -> Iterable[Tuple[int, ...]]:
+    """長さ制約内のトークン列をすべて生成。"""
+    n = len(tokens)
+    max_len = min(max_len, n)
+    for L in range(min_len, max_len + 1):
+        for i in range(0, n - L + 1):
+            seq = tuple(tokens[i:i+L])
+            if len(set(seq)) > 1:
+                yield seq
+
+
+def _token_seq_contains(seq: Tuple[int, ...], sub: Tuple[int, ...]) -> bool:
+    """seq が sub を部分列として含むか判定。"""
+    n, m = len(seq), len(sub)
+    if m > n:
+        return False
+    for i in range(n - m + 1):
+        if seq[i:i+m] == sub:
+            return True
+    return False
+
+
+def common_tokens_rank_from_norm(
+    norm_texts: List[str],
+    min_len: int = 3,
+    max_len: int = 12,
+    top_k: int = 15,
+    max_doc_ratio: float = 0.8,
+    encoding_name: str = "cl100k_base",
+) -> List[Tuple[str, int]]:
+    """
+    正規化済み本文配列から共通トークン列を抽出。tiktoken でトークン化し、
+    max_doc_ratio を超える頻出トークン列は除外する。
+    """
+    enc = tiktoken.get_encoding(encoding_name)
+    token_texts = [enc.encode(t) for t in norm_texts]
+    sub_to_docs: Dict[Tuple[int, ...], Set[int]] = defaultdict(set)
+    total_docs = len(token_texts)
+    for doc_id, tokens in enumerate(token_texts):
+        if not tokens:
+            continue
+        seen_in_doc: Set[Tuple[int, ...]] = set()
+        for seq in _iter_token_sequences(tokens, min_len, max_len):
+            if seq in seen_in_doc:
+                continue
+            seen_in_doc.add(seq)
+            sub_to_docs[seq].add(doc_id)
+
+    grouped: Dict[frozenset, List[Tuple[int, ...]]] = defaultdict(list)
+    for seq, docs in sub_to_docs.items():
+        if len(docs) >= 2 and len(docs) / total_docs <= max_doc_ratio:
+            grouped[frozenset(docs)].append(seq)
+
+    filtered: List[Tuple[Tuple[int, ...], int]] = []
+    for docset, seqs in grouped.items():
+        seqs.sort(key=lambda x: (-len(x), x))
+        kept: List[Tuple[int, ...]] = []
+        for seq in seqs:
+            if any(_token_seq_contains(k, seq) for k in kept):
+                continue
+            kept.append(seq)
+        for seq in kept:
+            filtered.append((seq, len(docset)))
+
+    filtered.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
+    return [(enc.decode(list(seq)), cnt) for seq, cnt in filtered[:top_k]]
+
+
+def hybrid_common_rank_from_norm(
+    norm_texts: List[str],
+    min_len: int = 3,
+    max_len: int = 12,
+    top_k: int = 15,
+    max_doc_ratio: float = 0.8,
+    encoding_name: str = "cl100k_base",
+) -> List[Tuple[str, int]]:
+    """Tokenと文字列の両方で共通判定し一致したもののみ返す。"""
+    token_ranks = common_tokens_rank_from_norm(
+        norm_texts,
+        min_len=min_len,
+        max_len=max_len,
+        top_k=top_k,
+        max_doc_ratio=max_doc_ratio,
+        encoding_name=encoding_name,
+    )
+    char_ranks = common_substrings_rank_from_norm(
+        norm_texts,
+        min_len=min_len,
+        max_len=max_len,
+        top_k=top_k,
+        max_doc_ratio=max_doc_ratio,
+    )
+    char_map = {s: c for s, c in char_ranks}
+    hybrid = [(s, min(cnt, char_map[s])) for s, cnt in token_ranks if s in char_map]
+    hybrid.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
+    return hybrid[:top_k]
+
 def rank_equal_titles_from_norm(norm_titles: List[str], top_k: int = 15) -> List[Tuple[str, int]]:
     """
     すでに正規化済み（除外適用＋空白正規化済み）のSEOタイトル配列から完全一致ランキング。
@@ -336,11 +464,40 @@ def common_substrings_rank(
     max_len: int = 12,
     analyze_chars: int = 5000,
     top_k: int = 15,
-    remove_trans: Optional[Dict[int, None]] = None
+    remove_trans: Optional[Dict[int, None]] = None,
+    max_doc_ratio: float = 0.8,
+    mode: str = "tiktoken",
+    encoding_name: str = "cl100k_base",
 ) -> List[Tuple[str, int]]:
-    """（オンライン計算用）正規化→切り詰め→共通部分文字列抽出。"""
+    """（オンライン計算用）正規化→切り詰め→共通部分列抽出。
+    mode に応じて文字列 or トークン列で判定。"""
     norm_texts = [_normalize_for_substrings(t, remove_trans)[:analyze_chars] for t in texts]
-    return common_substrings_rank_from_norm(norm_texts, min_len=min_len, max_len=max_len, top_k=top_k)
+    if mode == "char":
+        return common_substrings_rank_from_norm(
+            norm_texts,
+            min_len=min_len,
+            max_len=max_len,
+            top_k=top_k,
+            max_doc_ratio=max_doc_ratio,
+        )
+    elif mode == "hybrid":
+        return hybrid_common_rank_from_norm(
+            norm_texts,
+            min_len=min_len,
+            max_len=max_len,
+            top_k=top_k,
+            max_doc_ratio=max_doc_ratio,
+            encoding_name=encoding_name,
+        )
+    else:
+        return common_tokens_rank_from_norm(
+            norm_texts,
+            min_len=min_len,
+            max_len=max_len,
+            top_k=top_k,
+            max_doc_ratio=max_doc_ratio,
+            encoding_name=encoding_name,
+        )
 
 def rank_equal_titles(
     titles: List[str],
@@ -421,7 +578,8 @@ def main():
     parser = argparse.ArgumentParser(description='ウェブを検索し情報を抽出するツール')
     parser.add_argument('keyword', nargs='?', help='検索キーワード（--analysis-load を使う場合は省略可）')
     parser.add_argument('-n', '--num-results', type=int, default=10, help='取得するURLの件数')
-    parser.add_argument('--delay', type=float, default=1.0, help='リクエストの間隔(秒)')
+    parser.add_argument('--delay', type=float, default=0.5, help='各リクエスト前の待機秒数(デフォルト0.5)')
+    parser.add_argument('--workers', type=int, default=5, help='同時リクエスト数')
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
     # ログ
     parser.add_argument('--log-file', default=None, help='ログ出力先ファイル（指定しない場合はコンソールのみ）')
@@ -435,6 +593,10 @@ def main():
     parser.add_argument('--rank-k', type=int, default=15, help='ランキングの表示件数（共通本文サブ文字列 / 一致SEOタイトル）')
     parser.add_argument('--analyze-chars', type=int, default=5000, help='共通判定に用いる本文の先頭文字数（デフォルト5000）')
     parser.add_argument('--exclude-chars-file', default=None, help='共通判定前に除去する文字の一覧テキストファイル（UTF-8/BOM可）。各文字をそのまま列挙（改行は無視）。')
+    parser.add_argument('--max-common-ratio', type=float, default=0.8,
+                        help='共通サブ文字列として扱う最大出現率（0.0-1.0、デフォルト0.8）')
+    parser.add_argument('--analysis-mode', choices=['tiktoken', 'char', 'hybrid'], default='tiktoken',
+                        help='解析モード: tiktoken / char / hybrid')
     # 分析ファイル
     parser.add_argument('--analysis-save', default=None, help='正規化済みテキスト等を保存する分析ファイル(JSON)のパス')
     parser.add_argument('--analysis-load', default=None, help='分析ファイル(JSON)を読み込みローカル再集計のみ行う（ネットワークアクセス無し）')
@@ -455,19 +617,46 @@ def main():
         saved_meta = data.get("meta", {})
         saved_excl = set(saved_meta.get("exclude_chars", []))
         saved_analyze_chars = saved_meta.get("analyze_chars")
+        saved_mode = saved_meta.get("analysis_mode")
         # 現在の除外ファイルを読み込んだ場合は一致比較
         exclude_chars, remove_trans = load_exclude_chars(args.exclude_chars_file)
         if exclude_chars and exclude_chars != saved_excl:
             logging.warning("Exclude chars differ from analysis file. Recalc uses SAVED normalization.")
         if args.analyze_chars and saved_analyze_chars and args.analyze_chars != saved_analyze_chars:
             logging.warning("analyze_chars differs from analysis file. Recalc uses SAVED truncation.")
+        if saved_mode and args.analysis_mode != saved_mode:
+            logging.warning("analysis_mode differs from analysis file. Recalc uses %s", args.analysis_mode)
 
         norm_texts = data.get("norm_texts", [])
         norm_titles = data.get("norm_titles", [])
         results = data.get("results", [])
 
         # ローカル再集計（top-k 変更だけなら超高速）
-        common_subs = common_substrings_rank_from_norm(norm_texts, min_len=3, max_len=12, top_k=args.rank_k)
+        if args.analysis_mode == 'char':
+            common_subs = common_substrings_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        elif args.analysis_mode == 'hybrid':
+            common_subs = hybrid_common_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        else:
+            common_subs = common_tokens_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        common_subs = filter_common_phrases(common_subs, saved_meta.get("keyword", ""))
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
         logging.info("Re-aggregated locally from analysis file. rank_k=%d", args.rank_k)
@@ -480,6 +669,8 @@ def main():
                 "rank_k": args.rank_k,
                 "keyword": saved_meta.get("keyword"),
                 "analyze_chars": saved_meta.get("analyze_chars"),
+                "max_common_ratio": args.max_common_ratio,
+                "analysis_mode": args.analysis_mode,
                 "exclude_chars_count": len(saved_excl),
                 "common_substrings": common_subs,
                 "equal_seo_titles": title_ranks,
@@ -496,10 +687,13 @@ def main():
             print("本文:　", item['text'])
             print("-" * 80)
 
-        print(f"共通本文サブ文字列（3～12文字, 最長一致・上位{args.rank_k}）:")
+        unit = "文字" if args.analysis_mode == 'char' else "トークン"
+        enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
+        print(f"共通本文サブ文字列（3～12{unit}, 最長一致・上位{args.rank_k}）:")
         if common_subs:
             for sub, cnt in common_subs:
-                print(f"[{cnt}件 / {len(sub)}文字] {repr(sub)}")
+                length = len(sub) if args.analysis_mode == 'char' else len(enc.encode(sub))
+                print(f"[{cnt}件 / {length}{unit}] {repr(sub)}")
         else:
             print("（該当なし）")
 
@@ -524,41 +718,53 @@ def main():
 
     logging.info('検索開始 keyword="%s" num=%d', args.keyword, args.num_results)
     urls = get_search_results(args.keyword, args.num_results, args.delay)
-    session = create_session()
-
-    results: List[Dict] = []
+    session_factory = create_session
     robots_cache: Dict[str, bool] = {}
+    robots_lock = threading.Lock()
+    results: List[Dict] = []
     all_texts: List[str] = []
     seo_titles: List[str] = []
-
     skipped_total = 0
 
-    for url in urls:
-        html = fetch_html(session, url)
+    def process_url(target_url: str):
+        time.sleep(args.delay)
+        session = session_factory()
+        domain = extract_domain(target_url)
+        with robots_lock:
+            robots = robots_cache.get(domain)
+        if robots is None:
+            robots = robots_exists(session, target_url)
+            with robots_lock:
+                robots_cache[domain] = robots
+        if not robots:
+            logging.info('Skip %s robots.txt disallow', target_url)
+            return None
+        html = fetch_html(session, target_url)
         if not html:
-            skipped_total += 1
-            time.sleep(args.delay)
-            continue
+            return None
         data = parse_html(html)
-        domain = extract_domain(url)
-        if domain not in robots_cache:
-            robots_cache[domain] = robots_exists(session, url)
-
-        all_texts.append(data['text'])
-        seo_titles.append(data['title'])
-
         row = {
-            'url': url,
+            'url': target_url,
             'domain': domain,
             'published_time': data['published_time'],
             'title': data['title'],
             'text': data['text'][:args.chars],
-            'robots': robots_cache[domain]
+            'robots': robots,
         }
-        results.append(row)
+        logging.info('OK %s | title="%s" robots=%s', target_url, data['title'], robots)
+        return row, data['text'], data['title']
 
-        logging.info('OK %s | title="%s" robots=%s', url, data['title'], robots_cache[domain])
-        time.sleep(args.delay)
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        future_map = {ex.submit(process_url, u): u for u in urls}
+        for fut in as_completed(future_map):
+            res = fut.result()
+            if res is None:
+                skipped_total += 1
+                continue
+            row, text, title = res
+            results.append(row)
+            all_texts.append(text)
+            seo_titles.append(title)
 
     if results:
         # 正規化済み配列（分析ファイルにも保存）
@@ -573,21 +779,46 @@ def main():
             norm_titles.append(s)
 
         # 共通本文サブ文字列（3～12文字・最長一致優先）
-        common_subs = common_substrings_rank_from_norm(
-            norm_texts, min_len=3, max_len=12, top_k=args.rank_k
-        )
+        if args.analysis_mode == 'char':
+            common_subs = common_substrings_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        elif args.analysis_mode == 'hybrid':
+            common_subs = hybrid_common_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        else:
+            common_subs = common_tokens_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        common_subs = filter_common_phrases(common_subs, args.keyword)
         # SEOタイトルの完全一致ランキング
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
         logging.info("Summary: hits=%d, collected=%d, skipped=%d",
                      len(urls), len(results), skipped_total)
 
+        unit_en = "chars" if args.analysis_mode == 'char' else "tokens"
+        enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
         if common_subs:
-            logging.info("Top %d COMMON SUBSTRINGS (len 3-12, longest-match):", len(common_subs))
+            logging.info("Top %d COMMON SUBSTRINGS (len 3-12 %s, longest-match):", len(common_subs), unit_en)
             for sub, cnt in common_subs:
-                logging.info("[SUB %d] %r (len=%d)", cnt, sub, len(sub))
+                length = len(sub) if args.analysis_mode == 'char' else len(enc.encode(sub))
+                logging.info("[SUB %d] %r (len=%d)", cnt, sub, length)
         else:
-            logging.info("No common substrings found (len 3-12).")
+            logging.info("No common substrings found (len 3-12 %s).", unit_en)
 
         if title_ranks:
             logging.info("Top %d EQUAL SEO TITLES:", len(title_ranks))
@@ -610,6 +841,8 @@ def main():
                 "skipped": skipped_total,
                 "rank_k": args.rank_k,
                 "analyze_chars": args.analyze_chars,
+                "max_common_ratio": args.max_common_ratio,
+                "analysis_mode": args.analysis_mode,
                 "exclude_chars": sorted(list(exclude_chars)),
                 "exclude_chars_count": len(exclude_chars),
                 "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -623,6 +856,8 @@ def main():
             meta_for_analysis = {
                 "keyword": args.keyword,
                 "analyze_chars": args.analyze_chars,
+                "max_common_ratio": args.max_common_ratio,
+                "analysis_mode": args.analysis_mode,
                 "exclude_chars": sorted(list(exclude_chars)),
                 "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
@@ -638,10 +873,13 @@ def main():
             print("本文:　", item['text'])
             print("-" * 80)
 
-        print(f"共通本文サブ文字列（3～12文字, 最長一致・上位{args.rank_k}）:")
+        unit = "文字" if args.analysis_mode == 'char' else "トークン"
+        enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
+        print(f"共通本文サブ文字列（3～12{unit}, 最長一致・上位{args.rank_k}）:")
         if common_subs:
             for sub, cnt in common_subs:
-                print(f"[{cnt}件 / {len(sub)}文字] {repr(sub)}")
+                length = len(sub) if args.analysis_mode == 'char' else len(enc.encode(sub))
+                print(f"[{cnt}件 / {length}{unit}] {repr(sub)}")
         else:
             print("（該当なし）")
 
