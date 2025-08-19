@@ -277,21 +277,24 @@ def _iter_substrings(s: str, min_len: int, max_len: int) -> Iterable[str]:
     for L in range(min_len, max_len + 1):
         for i in range(0, n - L + 1):
             sub = s[i:i+L]
-            # 文字種フィルタ：完全な空白/記号列は除外（判定強化）
-            if _PRESENT_CHAR.search(sub):
+            # 文字種フィルタ：完全な空白/記号列・同一文字の繰り返しのみは除外
+            if _PRESENT_CHAR.search(sub) and len(set(sub)) > 1:
                 yield sub
 
 def common_substrings_rank_from_norm(
     norm_texts: List[str],
     min_len: int = 3,
     max_len: int = 12,
-    top_k: int = 15
+    top_k: int = 15,
+    max_doc_ratio: float = 0.8
 ) -> List[Tuple[str, int]]:
     """
     すでに正規化済み（除外適用＆空白圧縮済み＆必要なら切り詰め済み）の本文配列から
     共通部分文字列を抽出（最長一致優先）。
+    max_doc_ratio を超える頻出部分文字列は汎用的とみなして除外する。
     """
     sub_to_docs: Dict[str, Set[int]] = defaultdict(set)
+    total_docs = len(norm_texts)
     for doc_id, s in enumerate(norm_texts):
         if not s:
             continue
@@ -304,7 +307,7 @@ def common_substrings_rank_from_norm(
 
     grouped: Dict[frozenset, List[str]] = defaultdict(list)
     for sub, docs in sub_to_docs.items():
-        if len(docs) >= 2:
+        if len(docs) >= 2 and len(docs) / total_docs <= max_doc_ratio:
             grouped[frozenset(docs)].append(sub)
 
     filtered: List[Tuple[str, int]] = []
@@ -336,11 +339,19 @@ def common_substrings_rank(
     max_len: int = 12,
     analyze_chars: int = 5000,
     top_k: int = 15,
-    remove_trans: Optional[Dict[int, None]] = None
+    remove_trans: Optional[Dict[int, None]] = None,
+    max_doc_ratio: float = 0.8
 ) -> List[Tuple[str, int]]:
-    """（オンライン計算用）正規化→切り詰め→共通部分文字列抽出。"""
+    """（オンライン計算用）正規化→切り詰め→共通部分文字列抽出。
+    max_doc_ratio で汎用的すぎるサブ文字列を除外する。"""
     norm_texts = [_normalize_for_substrings(t, remove_trans)[:analyze_chars] for t in texts]
-    return common_substrings_rank_from_norm(norm_texts, min_len=min_len, max_len=max_len, top_k=top_k)
+    return common_substrings_rank_from_norm(
+        norm_texts,
+        min_len=min_len,
+        max_len=max_len,
+        top_k=top_k,
+        max_doc_ratio=max_doc_ratio,
+    )
 
 def rank_equal_titles(
     titles: List[str],
@@ -435,6 +446,8 @@ def main():
     parser.add_argument('--rank-k', type=int, default=15, help='ランキングの表示件数（共通本文サブ文字列 / 一致SEOタイトル）')
     parser.add_argument('--analyze-chars', type=int, default=5000, help='共通判定に用いる本文の先頭文字数（デフォルト5000）')
     parser.add_argument('--exclude-chars-file', default=None, help='共通判定前に除去する文字の一覧テキストファイル（UTF-8/BOM可）。各文字をそのまま列挙（改行は無視）。')
+    parser.add_argument('--max-common-ratio', type=float, default=0.8,
+                        help='共通サブ文字列として扱う最大出現率（0.0-1.0、デフォルト0.8）')
     # 分析ファイル
     parser.add_argument('--analysis-save', default=None, help='正規化済みテキスト等を保存する分析ファイル(JSON)のパス')
     parser.add_argument('--analysis-load', default=None, help='分析ファイル(JSON)を読み込みローカル再集計のみ行う（ネットワークアクセス無し）')
@@ -467,7 +480,13 @@ def main():
         results = data.get("results", [])
 
         # ローカル再集計（top-k 変更だけなら超高速）
-        common_subs = common_substrings_rank_from_norm(norm_texts, min_len=3, max_len=12, top_k=args.rank_k)
+        common_subs = common_substrings_rank_from_norm(
+            norm_texts,
+            min_len=3,
+            max_len=12,
+            top_k=args.rank_k,
+            max_doc_ratio=args.max_common_ratio,
+        )
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
         logging.info("Re-aggregated locally from analysis file. rank_k=%d", args.rank_k)
@@ -480,6 +499,7 @@ def main():
                 "rank_k": args.rank_k,
                 "keyword": saved_meta.get("keyword"),
                 "analyze_chars": saved_meta.get("analyze_chars"),
+                "max_common_ratio": args.max_common_ratio,
                 "exclude_chars_count": len(saved_excl),
                 "common_substrings": common_subs,
                 "equal_seo_titles": title_ranks,
@@ -574,7 +594,11 @@ def main():
 
         # 共通本文サブ文字列（3～12文字・最長一致優先）
         common_subs = common_substrings_rank_from_norm(
-            norm_texts, min_len=3, max_len=12, top_k=args.rank_k
+            norm_texts,
+            min_len=3,
+            max_len=12,
+            top_k=args.rank_k,
+            max_doc_ratio=args.max_common_ratio,
         )
         # SEOタイトルの完全一致ランキング
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
@@ -610,6 +634,7 @@ def main():
                 "skipped": skipped_total,
                 "rank_k": args.rank_k,
                 "analyze_chars": args.analyze_chars,
+                "max_common_ratio": args.max_common_ratio,
                 "exclude_chars": sorted(list(exclude_chars)),
                 "exclude_chars_count": len(exclude_chars),
                 "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -623,6 +648,7 @@ def main():
             meta_for_analysis = {
                 "keyword": args.keyword,
                 "analyze_chars": args.analyze_chars,
+                "max_common_ratio": args.max_common_ratio,
                 "exclude_chars": sorted(list(exclude_chars)),
                 "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             }

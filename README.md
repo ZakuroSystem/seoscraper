@@ -12,6 +12,8 @@
 * **本文・SEOタイトルの完全一致集計（共通テキストを上位表示）**
 * ログをコンソール・ファイルに出力（ローテーション対応）
 * 調査結果を CSV / JSON 形式で保存可能
+* Streamlit ベースのリッチな Web UI に対応
+* 出現頻度が高すぎる共通サブ文字列を自動除外し分析の信頼性を向上
 
 ## インストール
 
@@ -36,8 +38,17 @@ python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 * `--log-level` : ログレベル (`DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL`)
 * `--results-csv` : 結果を CSV に保存
 * `--results-json` : 結果とメタ情報を JSON に保存
-* `--top-k` : 共通本文・共通タイトルの上位件数（デフォルト 15）
+* `--rank-k` : 共通本文・共通タイトルの上位件数（デフォルト 15）
 * `--analyze-chars` : 分析する文字数を指定 (デフォルト5000)
+* `--max-common-ratio` : 共通サブ文字列とみなす最大出現率（デフォルト 0.8）
+
+### Web UI
+
+リッチな Web インターフェースは次のコマンドで起動できます。
+
+```bash
+streamlit run webui.py
+```
 
 ### 実行例
 
@@ -45,7 +56,7 @@ python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 python scraper.py "openai" -n 3 --delay 1.5 --chars 500 \
   --log-file scrape.log --log-level INFO \
   --results-csv results.csv --results-json results.json \
-  --rank-k 10 --analyze-chars 4000
+  --rank-k 10 --analyze-chars 4000 --max-common-ratio 0.8
 ```
 
 ### 出力例

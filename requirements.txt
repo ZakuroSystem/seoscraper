@@ -2,3 +2,5 @@ googlesearch-python
 requests
 beautifulsoup4
 tldextract
+streamlit
+pandas
