@@ -65,19 +65,28 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
                 texts.append(text)
                 titles.append(title)
 
-    common_subs = common_substrings_rank(
+    # まず多めに候補を取得し、フィルタ後に上位 rank_k 件へ絞り込む
+    raw_subs = common_substrings_rank(
         texts,
         analyze_chars=analyze_chars,
-        top_k=rank_k,
+        top_k=rank_k * 3,
         remove_trans=remove_trans,
         remove_patterns=remove_patterns,
         max_doc_ratio=max_common_ratio,
         mode=analysis_mode,
     )
-    common_subs = filter_common_phrases(common_subs, keyword)
-    title_ranks = rank_equal_titles(titles, top_k=rank_k,
-                                   remove_trans=remove_trans,
-                                   remove_patterns=remove_patterns)
+    filtered = filter_common_phrases(raw_subs, keyword)[:rank_k]
+    total_docs = len(texts) if texts else 1
+    common_subs = [
+        {"text": sub, "count": cnt, "ratio": cnt / total_docs}
+        for sub, cnt in filtered
+    ]
+    title_ranks = rank_equal_titles(
+        titles,
+        top_k=rank_k,
+        remove_trans=remove_trans,
+        remove_patterns=remove_patterns,
+    )
     return results, common_subs, title_ranks
 
 

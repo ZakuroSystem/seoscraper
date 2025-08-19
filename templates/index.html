@@ -70,8 +70,8 @@
 
     <h2>Common substrings</h2>
     <ul>
-      {% for sub, cnt in common_subs %}
-        <li>{{ cnt }} docs: {{ sub }}</li>
+      {% for item in common_subs %}
+        <li>{{ item.count }} docs ({{ (item.ratio * 100)|round(1) }}%): {{ item.text }}</li>
       {% endfor %}
     </ul>
 

@@ -666,30 +666,35 @@ def main():
 
         # ローカル再集計（top-k 変更だけなら超高速）
         if args.analysis_mode == 'char':
-            common_subs = common_substrings_rank_from_norm(
+            raw_subs = common_substrings_rank_from_norm(
                 norm_texts,
                 min_len=3,
                 max_len=12,
-                top_k=args.rank_k,
+                top_k=args.rank_k * 3,
                 max_doc_ratio=args.max_common_ratio,
             )
         elif args.analysis_mode == 'hybrid':
-            common_subs = hybrid_common_rank_from_norm(
+            raw_subs = hybrid_common_rank_from_norm(
                 norm_texts,
                 min_len=3,
                 max_len=12,
-                top_k=args.rank_k,
+                top_k=args.rank_k * 3,
                 max_doc_ratio=args.max_common_ratio,
             )
         else:
-            common_subs = common_tokens_rank_from_norm(
+            raw_subs = common_tokens_rank_from_norm(
                 norm_texts,
                 min_len=3,
                 max_len=12,
-                top_k=args.rank_k,
+                top_k=args.rank_k * 3,
                 max_doc_ratio=args.max_common_ratio,
             )
-        common_subs = filter_common_phrases(common_subs, saved_meta.get("keyword", ""))
+        filtered = filter_common_phrases(raw_subs, saved_meta.get("keyword", ""))[:args.rank_k]
+        total_docs = len(norm_texts) if norm_texts else 1
+        common_subs = [
+            {"text": sub, "count": cnt, "ratio": cnt / total_docs}
+            for sub, cnt in filtered
+        ]
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
         logging.info("Re-aggregated locally from analysis file. rank_k=%d", args.rank_k)
@@ -726,9 +731,12 @@ def main():
         enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
         print(f"共通本文サブ文字列（3～12{unit}, 最長一致・上位{args.rank_k}）:")
         if common_subs:
-            for sub, cnt in common_subs:
+            for item in common_subs:
+                sub = item["text"]
+                cnt = item["count"]
+                ratio = item["ratio"]
                 length = len(sub) if args.analysis_mode == 'char' else len(enc.encode(sub))
-                print(f"[{cnt}件 / {length}{unit}] {repr(sub)}")
+                print(f"[{cnt}件 / {length}{unit} / {ratio:.0%}] {repr(sub)}")
         else:
             print("（該当なし）")
 
@@ -824,30 +832,35 @@ def main():
 
         # 共通本文サブ文字列（3～12文字・最長一致優先）
         if args.analysis_mode == 'char':
-            common_subs = common_substrings_rank_from_norm(
+            raw_subs = common_substrings_rank_from_norm(
                 norm_texts,
                 min_len=3,
                 max_len=12,
-                top_k=args.rank_k,
+                top_k=args.rank_k * 3,
                 max_doc_ratio=args.max_common_ratio,
             )
         elif args.analysis_mode == 'hybrid':
-            common_subs = hybrid_common_rank_from_norm(
+            raw_subs = hybrid_common_rank_from_norm(
                 norm_texts,
                 min_len=3,
                 max_len=12,
-                top_k=args.rank_k,
+                top_k=args.rank_k * 3,
                 max_doc_ratio=args.max_common_ratio,
             )
         else:
-            common_subs = common_tokens_rank_from_norm(
+            raw_subs = common_tokens_rank_from_norm(
                 norm_texts,
                 min_len=3,
                 max_len=12,
-                top_k=args.rank_k,
+                top_k=args.rank_k * 3,
                 max_doc_ratio=args.max_common_ratio,
             )
-        common_subs = filter_common_phrases(common_subs, args.keyword)
+        filtered = filter_common_phrases(raw_subs, args.keyword)[:args.rank_k]
+        total_docs = len(norm_texts) if norm_texts else 1
+        common_subs = [
+            {"text": sub, "count": cnt, "ratio": cnt / total_docs}
+            for sub, cnt in filtered
+        ]
         # SEOタイトルの完全一致ランキング
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
@@ -858,9 +871,12 @@ def main():
         enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
         if common_subs:
             logging.info("Top %d COMMON SUBSTRINGS (len 3-12 %s, longest-match):", len(common_subs), unit_en)
-            for sub, cnt in common_subs:
+            for item in common_subs:
+                sub = item["text"]
+                cnt = item["count"]
+                ratio = item["ratio"]
                 length = len(sub) if args.analysis_mode == 'char' else len(enc.encode(sub))
-                logging.info("[SUB %d] %r (len=%d)", cnt, sub, length)
+                logging.info("[SUB %d / %.0f%%] %r (len=%d)", cnt, ratio * 100, sub, length)
         else:
             logging.info("No common substrings found (len 3-12 %s).", unit_en)
 
@@ -924,9 +940,12 @@ def main():
         enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
         print(f"共通本文サブ文字列（3～12{unit}, 最長一致・上位{args.rank_k}）:")
         if common_subs:
-            for sub, cnt in common_subs:
+            for item in common_subs:
+                sub = item["text"]
+                cnt = item["count"]
+                ratio = item["ratio"]
                 length = len(sub) if args.analysis_mode == 'char' else len(enc.encode(sub))
-                print(f"[{cnt}件 / {length}{unit}] {repr(sub)}")
+                print(f"[{cnt}件 / {length}{unit} / {ratio:.0%}] {repr(sub)}")
         else:
             print("（該当なし）")
 
