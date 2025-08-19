@@ -1,7 +1,8 @@
 import time
 from typing import Dict
-import pandas as pd
-import streamlit as st
+from flask import Flask, render_template, request
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper import (
     create_session,
@@ -12,9 +13,10 @@ from scraper import (
     robots_exists,
     common_substrings_rank,
     rank_equal_titles,
+    filter_common_phrases,
 )
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+app = Flask(__name__)
 
 
 def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
@@ -71,47 +73,43 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
         max_doc_ratio=max_common_ratio,
         mode=analysis_mode,
     )
+    common_subs = filter_common_phrases(common_subs, keyword)
     title_ranks = rank_equal_titles(titles, top_k=rank_k)
     return results, common_subs, title_ranks
 
 
-def main():
-    st.title("SEO Scraper Web UI")
-    keyword = st.text_input("Keyword")
-    num_results = st.number_input("Number of results", min_value=1, max_value=50, value=10)
-    delay = st.number_input("Delay between requests (sec)", min_value=0.0, value=0.5)
-    workers = st.number_input("Workers", min_value=1, max_value=32, value=5)
-    analyze_chars = st.number_input("Analyze characters", min_value=100, max_value=20000, value=5000)
-    rank_k = st.number_input("Top K", min_value=1, max_value=50, value=15)
-    max_common_ratio = st.slider("Max common substring ratio", min_value=0.5, max_value=1.0, value=0.8)
-    analysis_mode = st.selectbox("Analysis mode", ["tiktoken", "char", "hybrid"], index=0)
-
-    if st.button("Run") and keyword:
-        with st.spinner("Scraping..."):
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        keyword = request.form.get('keyword', '')
+        if keyword:
+            num_results = int(request.form.get('num_results', 10))
+            delay = float(request.form.get('delay', 0.5))
+            workers = int(request.form.get('workers', 5))
+            analyze_chars = int(request.form.get('analyze_chars', 5000))
+            rank_k = int(request.form.get('rank_k', 15))
+            max_common_ratio = float(request.form.get('max_common_ratio', 0.8))
+            analysis_mode = request.form.get('analysis_mode', 'tiktoken')
             results, common_subs, title_ranks = run_analysis(
                 keyword,
-                int(num_results),
-                float(delay),
-                int(rank_k),
-                int(analyze_chars),
-                float(max_common_ratio),
+                num_results,
+                delay,
+                rank_k,
+                analyze_chars,
+                max_common_ratio,
                 analysis_mode,
-                int(workers),
+                workers,
             )
-        if results:
-            st.subheader("Results")
-            st.dataframe(pd.DataFrame(results))
-
-            st.subheader("Common substrings")
-            for sub, cnt in common_subs:
-                st.write(f"{cnt} docs: {sub}")
-
-            st.subheader("Equal SEO titles")
-            for title, cnt in title_ranks:
-                st.write(f"{cnt} docs: {title}")
-        else:
-            st.write("No results found")
+            return render_template(
+                'index.html',
+                results=results,
+                common_subs=common_subs,
+                title_ranks=title_ranks,
+                form=request.form,
+            )
+    return render_template('index.html', results=None, form=None)
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    app.run(port=5000)
+

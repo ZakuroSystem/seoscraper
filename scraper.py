@@ -273,6 +273,30 @@ def _normalize_for_substrings(s: str, remove_trans: Optional[Dict[int, None]] = 
     s = re.sub(r'\s+', ' ', s)
     return s.strip()
 
+_NOISE_PHRASES = {
+    "です", "です。", "ます", "ます。", "します", "します。",
+    "しています", "してい", "ている", "ください", "あります", "ありま",
+    "サービス", "事業所",
+}
+_KANA_ONLY = re.compile(r'^[\u3040-\u30FF]+$')
+
+def filter_common_phrases(items: List[Tuple[str, int]], keyword: str) -> List[Tuple[str, int]]:
+    """共通結果からノイズと検索語を除外"""
+    norm_kw = _normalize_for_substrings(keyword)
+    parts = [p for p in re.split(r'\s+', norm_kw) if p]
+    noise = set(parts) | _NOISE_PHRASES
+    filtered: List[Tuple[str, int]] = []
+    for sub, cnt in items:
+        if sub != sub.strip():
+            continue
+        s = sub.strip()
+        if not s or s in noise or s in norm_kw:
+            continue
+        if _KANA_ONLY.fullmatch(s) and len(s) <= 4:
+            continue
+        filtered.append((sub, cnt))
+    return filtered
+
 def _iter_substrings(s: str, min_len: int, max_len: int) -> Iterable[str]:
     """長さ制約内の部分文字列をすべて生成（文字列そのまま、トークナイザ不使用）。"""
     n = len(s)
@@ -632,6 +656,7 @@ def main():
                 top_k=args.rank_k,
                 max_doc_ratio=args.max_common_ratio,
             )
+        common_subs = filter_common_phrases(common_subs, saved_meta.get("keyword", ""))
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
         logging.info("Re-aggregated locally from analysis file. rank_k=%d", args.rank_k)
@@ -778,6 +803,7 @@ def main():
                 top_k=args.rank_k,
                 max_doc_ratio=args.max_common_ratio,
             )
+        common_subs = filter_common_phrases(common_subs, args.keyword)
         # SEOタイトルの完全一致ランキング
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
