@@ -14,6 +14,7 @@
 * 調査結果を CSV / JSON 形式で保存可能
 * Flask を用いた HTML Web UI（ポート5000）に対応
 * 出現頻度が高すぎる共通サブ文字列や検索語・短い仮名列を自動除外し分析の信頼性を向上
+* 共通サブ文字列ごとの出現割合を表示し、重要度を直感的に評価可能
 * tiktoken によるトークン列分析モード（デフォルト）を搭載
 * トークンと文字列を組み合わせたハイブリッド分析で高精度な共通判定
 * スレッド並列により検索と取得を高速化（`--workers` で制御、デフォルト10）
@@ -92,7 +93,7 @@ robots.txt: あり
 2025-08-12 15:20:05 INFO: OK https://en.wikipedia.org/wiki/OpenAI | title="OpenAI - Wikipedia" robots=True
 2025-08-12 15:20:05 INFO: Summary: hits=3, collected=3, skipped=0
 2025-08-12 15:20:05 INFO: Top 15 COMMON BODY TEXTS:
-2025-08-12 15:20:05 INFO: [BODY 2] 'OpenAI, Inc. は米国の人工知能 (AI) ...'
+2025-08-12 15:20:05 INFO: [BODY 2 / 67%] 'OpenAI, Inc. は米国の人工知能 (AI) ...'
 2025-08-12 15:20:05 INFO: Top 15 COMMON SEO TITLES:
 2025-08-12 15:20:05 INFO: [TITLE 2] 'OpenAI - Wikipedia'
 ```
