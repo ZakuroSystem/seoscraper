@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SEO Analyzer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="container py-5">
+  <h1>SEO Analyzer</h1>
+  <div class="mb-3">
+    <label for="url" class="form-label">URL (optional)</label>
+    <input type="text" id="url" class="form-control" placeholder="https://example.com">
+  </div>
+  <div class="mb-3">
+    <label for="text" class="form-label">Text</label>
+    <textarea id="text" class="form-control" rows="5" placeholder="Enter text here or provide a URL"></textarea>
+  </div>
+  <button id="analyze" class="btn btn-primary">Analyze</button>
+  <canvas id="chart" class="mt-4"></canvas>
+  <script src="{{ url_for('static', filename='scripts.js') }}"></script>
+</body>
+</html>
