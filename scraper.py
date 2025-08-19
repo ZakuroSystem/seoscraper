@@ -3,7 +3,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 from typing import List, Optional, Tuple, Dict, Set, Iterable
-from collections import Counter, defaultdict
+from collections import defaultdict
 import re
 import json
 import csv
@@ -439,7 +439,18 @@ def common_tokens_rank_from_norm(
             filtered.append((seq, len(docset)))
 
     filtered.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
-    return [(enc.decode(list(seq)), cnt) for seq, cnt in filtered[:top_k]]
+    results: List[Tuple[str, int]] = []
+    for seq, cnt in filtered:
+        try:
+            text = enc.decode(list(seq), errors="strict")
+        except UnicodeDecodeError:
+            continue
+        if "\ufffd" in text:
+            continue
+        results.append((text, cnt))
+        if len(results) >= top_k:
+            break
+    return results
 
 
 def hybrid_common_rank_from_norm(
@@ -471,14 +482,42 @@ def hybrid_common_rank_from_norm(
     hybrid.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
     return hybrid[:top_k]
 
-def rank_equal_titles_from_norm(norm_titles: List[str], top_k: int = 15) -> List[Tuple[str, int]]:
-    """
-    すでに正規化済み（除外適用＋空白正規化済み）のSEOタイトル配列から完全一致ランキング。
-    """
-    counter = Counter(t for t in norm_titles if t)
-    items = [(t, c) for t, c in counter.items() if c >= 2]
-    items.sort(key=lambda x: (-x[1], -len(x[0]), x[0]))
-    return items[:top_k]
+def rank_common_titles_from_norm(
+    norm_titles: List[str],
+    top_k: int = 15,
+    min_len: int = 3,
+    max_len: int = 12,
+    max_doc_ratio: float = 0.8,
+    mode: str = "tiktoken",
+    encoding_name: str = "cl100k_base",
+) -> List[Tuple[str, int]]:
+    """正規化済みタイトルの共通部分列ランキング。"""
+    if mode == "char":
+        return common_substrings_rank_from_norm(
+            norm_titles,
+            min_len=min_len,
+            max_len=max_len,
+            top_k=top_k,
+            max_doc_ratio=max_doc_ratio,
+        )
+    elif mode == "hybrid":
+        return hybrid_common_rank_from_norm(
+            norm_titles,
+            min_len=min_len,
+            max_len=max_len,
+            top_k=top_k,
+            max_doc_ratio=max_doc_ratio,
+            encoding_name=encoding_name,
+        )
+    else:
+        return common_tokens_rank_from_norm(
+            norm_titles,
+            min_len=min_len,
+            max_len=max_len,
+            top_k=top_k,
+            max_doc_ratio=max_doc_ratio,
+            encoding_name=encoding_name,
+        )
 
 def common_substrings_rank(
     texts: List[str],
@@ -525,13 +564,15 @@ def common_substrings_rank(
             encoding_name=encoding_name,
         )
 
-def rank_equal_titles(
+def rank_common_titles(
     titles: List[str],
     top_k: int = 15,
     remove_trans: Optional[Dict[int, None]] = None,
     remove_patterns: Optional[List[re.Pattern]] = None,
+    mode: str = "tiktoken",
+    encoding_name: str = "cl100k_base",
 ) -> List[Tuple[str, int]]:
-    """（オンライン計算用）正規化→完全一致ランキング。"""
+    """（オンライン計算用）正規化→共通部分列ランキング。"""
     normed = []
     for t in titles:
         if not t:
@@ -545,7 +586,12 @@ def rank_equal_titles(
         s = re.sub(r'\s+', ' ', s).strip()
         if s:
             normed.append(s)
-    return rank_equal_titles_from_norm(normed, top_k=top_k)
+    return rank_common_titles_from_norm(
+        normed,
+        top_k=top_k,
+        mode=mode,
+        encoding_name=encoding_name,
+    )
 
 
 # =========================
@@ -620,7 +666,7 @@ def main():
     parser.add_argument('--results-csv', default=None, help='結果CSVのパス')
     parser.add_argument('--results-json', default=None, help='結果JSONのパス')
     # 共通判定パラメータ
-    parser.add_argument('--rank-k', type=int, default=15, help='ランキングの表示件数（共通本文サブ文字列 / 一致SEOタイトル）')
+    parser.add_argument('--rank-k', type=int, default=15, help='ランキングの表示件数（共通本文サブ文字列 / 共通SEOタイトルサブ文字列）')
     parser.add_argument('--analyze-chars', type=int, default=5000, help='共通判定に用いる本文の先頭文字数（デフォルト5000）')
     parser.add_argument('--exclude-file', default=None, help='除外文字や正規表現の一覧ファイル。`/regex/` 形式の行は正規表現として扱う。')
     parser.add_argument('--max-common-ratio', type=float, default=0.8,
@@ -695,7 +741,11 @@ def main():
             {"text": sub, "count": cnt, "ratio": cnt / total_docs}
             for sub, cnt in filtered
         ]
-        title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
+        title_ranks = rank_common_titles_from_norm(
+            norm_titles,
+            top_k=args.rank_k,
+            mode=args.analysis_mode,
+        )
 
         logging.info("Re-aggregated locally from analysis file. rank_k=%d", args.rank_k)
 
@@ -713,7 +763,7 @@ def main():
                 "exclude_regex": saved_regex,
                 "exclude_regex_count": len(saved_regex),
                 "common_substrings": common_subs,
-                "equal_seo_titles": title_ranks,
+                "common_seo_title_substrings": title_ranks,
             }
             write_results_json(args.results_json, results, meta)
 
@@ -740,7 +790,7 @@ def main():
         else:
             print("（該当なし）")
 
-        print(f"一致SEOタイトル（完全一致・上位{args.rank_k}）:")
+        print(f"共通SEOタイトルサブ文字列（3～12{unit}、上位{args.rank_k}）:")
         if title_ranks:
             for title, cnt in title_ranks:
                 print(f"[{cnt}件] {repr(title)}")
@@ -861,8 +911,12 @@ def main():
             {"text": sub, "count": cnt, "ratio": cnt / total_docs}
             for sub, cnt in filtered
         ]
-        # SEOタイトルの完全一致ランキング
-        title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
+        # SEOタイトルの共通部分列ランキング
+        title_ranks = rank_common_titles_from_norm(
+            norm_titles,
+            top_k=args.rank_k,
+            mode=args.analysis_mode,
+        )
 
         logging.info("Summary: hits=%d, collected=%d, skipped=%d",
                      len(urls), len(results), skipped_total)
@@ -881,11 +935,11 @@ def main():
             logging.info("No common substrings found (len 3-12 %s).", unit_en)
 
         if title_ranks:
-            logging.info("Top %d EQUAL SEO TITLES:", len(title_ranks))
+            logging.info("Top %d COMMON SEO TITLE SUBSTRINGS:", len(title_ranks))
             for title, cnt in title_ranks:
                 logging.info("[TITLE %d] %r", cnt, title)
         else:
-            logging.info("No equal SEO titles (>=2 occurrences).")
+            logging.info("No common SEO title substrings (>=2 occurrences).")
 
         # ファイル書き出し
         if args.results_csv:
@@ -909,7 +963,7 @@ def main():
                 "exclude_regex_count": len(exclude_regex),
                 "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "common_substrings": common_subs,
-                "equal_seo_titles": title_ranks,
+                "common_seo_title_substrings": title_ranks,
             }
             write_results_json(args.results_json, results, meta)
 
@@ -949,7 +1003,7 @@ def main():
         else:
             print("（該当なし）")
 
-        print(f"一致SEOタイトル（完全一致・上位{args.rank_k}）:")
+        print(f"共通SEOタイトルサブ文字列（3～12{unit}、上位{args.rank_k}）:")
         if title_ranks:
             for title, cnt in title_ranks:
                 print(f"[{cnt}件] {repr(title)}")

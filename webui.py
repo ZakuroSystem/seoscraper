@@ -11,7 +11,7 @@ from scraper import (
     extract_domain,
     robots_exists,
     common_substrings_rank,
-    rank_equal_titles,
+    rank_common_titles,
     filter_common_phrases,
     parse_exclude_lines,
 )
@@ -81,11 +81,12 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
         {"text": sub, "count": cnt, "ratio": cnt / total_docs}
         for sub, cnt in filtered
     ]
-    title_ranks = rank_equal_titles(
+    title_ranks = rank_common_titles(
         titles,
         top_k=rank_k,
         remove_trans=remove_trans,
         remove_patterns=remove_patterns,
+        mode=analysis_mode,
     )
     return results, common_subs, title_ranks
 
