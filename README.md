@@ -15,6 +15,8 @@
 * Streamlit ベースのリッチな Web UI に対応
 * 出現頻度が高すぎる共通サブ文字列を自動除外し分析の信頼性を向上
 * tiktoken によるトークン列分析モード（デフォルト）を搭載
+* トークンと文字列を組み合わせたハイブリッド分析で高精度な共通判定
+* スレッド並列により検索と取得を高速化（`--workers` で制御）
 
 ## インストール
 
@@ -33,7 +35,8 @@ python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 ```
 
 * `-n` : 取得件数（デフォルト 10）
-* `--delay` : リクエスト間隔（秒）
+* `--delay` : 各リクエスト前の待機秒数（デフォルト 0.5）
+* `--workers` : 並列リクエスト数（デフォルト 5）
 * `--chars` : 本文の表示文字数（デフォルト 1000）
 * `--log-file` : ログファイルのパスを指定するとファイル出力（省略時はコンソールのみ）
 * `--log-level` : ログレベル (`DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL`)
@@ -42,7 +45,7 @@ python scraper.py "openai" -n 3 --delay 1.5 --chars 500
 * `--rank-k` : 共通本文・共通タイトルの上位件数（デフォルト 15）
 * `--analyze-chars` : 分析する文字数を指定 (デフォルト5000)
 * `--max-common-ratio` : 共通サブ文字列とみなす最大出現率（デフォルト 0.8）
-* `--analysis-mode` : 共通判定に用いる解析モード (`tiktoken` / `char`、デフォルト `tiktoken`)
+* `--analysis-mode` : 共通判定に用いる解析モード (`tiktoken` / `char` / `hybrid`、デフォルト `tiktoken`)
 
 ### Web UI
 

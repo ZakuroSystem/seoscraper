@@ -8,6 +8,8 @@ import re
 import json
 import csv
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from bs4 import BeautifulSoup
 import requests
@@ -393,6 +395,36 @@ def common_tokens_rank_from_norm(
     filtered.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
     return [(enc.decode(list(seq)), cnt) for seq, cnt in filtered[:top_k]]
 
+
+def hybrid_common_rank_from_norm(
+    norm_texts: List[str],
+    min_len: int = 3,
+    max_len: int = 12,
+    top_k: int = 15,
+    max_doc_ratio: float = 0.8,
+    encoding_name: str = "cl100k_base",
+) -> List[Tuple[str, int]]:
+    """Tokenと文字列の両方で共通判定し一致したもののみ返す。"""
+    token_ranks = common_tokens_rank_from_norm(
+        norm_texts,
+        min_len=min_len,
+        max_len=max_len,
+        top_k=top_k,
+        max_doc_ratio=max_doc_ratio,
+        encoding_name=encoding_name,
+    )
+    char_ranks = common_substrings_rank_from_norm(
+        norm_texts,
+        min_len=min_len,
+        max_len=max_len,
+        top_k=top_k,
+        max_doc_ratio=max_doc_ratio,
+    )
+    char_map = {s: c for s, c in char_ranks}
+    hybrid = [(s, min(cnt, char_map[s])) for s, cnt in token_ranks if s in char_map]
+    hybrid.sort(key=lambda t: (-t[1], -len(t[0]), t[0]))
+    return hybrid[:top_k]
+
 def rank_equal_titles_from_norm(norm_titles: List[str], top_k: int = 15) -> List[Tuple[str, int]]:
     """
     すでに正規化済み（除外適用＋空白正規化済み）のSEOタイトル配列から完全一致ランキング。
@@ -423,6 +455,15 @@ def common_substrings_rank(
             max_len=max_len,
             top_k=top_k,
             max_doc_ratio=max_doc_ratio,
+        )
+    elif mode == "hybrid":
+        return hybrid_common_rank_from_norm(
+            norm_texts,
+            min_len=min_len,
+            max_len=max_len,
+            top_k=top_k,
+            max_doc_ratio=max_doc_ratio,
+            encoding_name=encoding_name,
         )
     else:
         return common_tokens_rank_from_norm(
@@ -513,7 +554,8 @@ def main():
     parser = argparse.ArgumentParser(description='ウェブを検索し情報を抽出するツール')
     parser.add_argument('keyword', nargs='?', help='検索キーワード（--analysis-load を使う場合は省略可）')
     parser.add_argument('-n', '--num-results', type=int, default=10, help='取得するURLの件数')
-    parser.add_argument('--delay', type=float, default=1.0, help='リクエストの間隔(秒)')
+    parser.add_argument('--delay', type=float, default=0.5, help='各リクエスト前の待機秒数(デフォルト0.5)')
+    parser.add_argument('--workers', type=int, default=5, help='同時リクエスト数')
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
     # ログ
     parser.add_argument('--log-file', default=None, help='ログ出力先ファイル（指定しない場合はコンソールのみ）')
@@ -529,8 +571,8 @@ def main():
     parser.add_argument('--exclude-chars-file', default=None, help='共通判定前に除去する文字の一覧テキストファイル（UTF-8/BOM可）。各文字をそのまま列挙（改行は無視）。')
     parser.add_argument('--max-common-ratio', type=float, default=0.8,
                         help='共通サブ文字列として扱う最大出現率（0.0-1.0、デフォルト0.8）')
-    parser.add_argument('--analysis-mode', choices=['tiktoken', 'char'], default='tiktoken',
-                        help='共通判定に用いる解析モード (tiktoken または char)')
+    parser.add_argument('--analysis-mode', choices=['tiktoken', 'char', 'hybrid'], default='tiktoken',
+                        help='解析モード: tiktoken / char / hybrid')
     # 分析ファイル
     parser.add_argument('--analysis-save', default=None, help='正規化済みテキスト等を保存する分析ファイル(JSON)のパス')
     parser.add_argument('--analysis-load', default=None, help='分析ファイル(JSON)を読み込みローカル再集計のみ行う（ネットワークアクセス無し）')
@@ -568,6 +610,14 @@ def main():
         # ローカル再集計（top-k 変更だけなら超高速）
         if args.analysis_mode == 'char':
             common_subs = common_substrings_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        elif args.analysis_mode == 'hybrid':
+            common_subs = hybrid_common_rank_from_norm(
                 norm_texts,
                 min_len=3,
                 max_len=12,
@@ -643,41 +693,53 @@ def main():
 
     logging.info('検索開始 keyword="%s" num=%d', args.keyword, args.num_results)
     urls = get_search_results(args.keyword, args.num_results, args.delay)
-    session = create_session()
-
-    results: List[Dict] = []
+    session_factory = create_session
     robots_cache: Dict[str, bool] = {}
+    robots_lock = threading.Lock()
+    results: List[Dict] = []
     all_texts: List[str] = []
     seo_titles: List[str] = []
-
     skipped_total = 0
 
-    for url in urls:
-        html = fetch_html(session, url)
+    def process_url(target_url: str):
+        time.sleep(args.delay)
+        session = session_factory()
+        domain = extract_domain(target_url)
+        with robots_lock:
+            robots = robots_cache.get(domain)
+        if robots is None:
+            robots = robots_exists(session, target_url)
+            with robots_lock:
+                robots_cache[domain] = robots
+        if not robots:
+            logging.info('Skip %s robots.txt disallow', target_url)
+            return None
+        html = fetch_html(session, target_url)
         if not html:
-            skipped_total += 1
-            time.sleep(args.delay)
-            continue
+            return None
         data = parse_html(html)
-        domain = extract_domain(url)
-        if domain not in robots_cache:
-            robots_cache[domain] = robots_exists(session, url)
-
-        all_texts.append(data['text'])
-        seo_titles.append(data['title'])
-
         row = {
-            'url': url,
+            'url': target_url,
             'domain': domain,
             'published_time': data['published_time'],
             'title': data['title'],
             'text': data['text'][:args.chars],
-            'robots': robots_cache[domain]
+            'robots': robots,
         }
-        results.append(row)
+        logging.info('OK %s | title="%s" robots=%s', target_url, data['title'], robots)
+        return row, data['text'], data['title']
 
-        logging.info('OK %s | title="%s" robots=%s', url, data['title'], robots_cache[domain])
-        time.sleep(args.delay)
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        future_map = {ex.submit(process_url, u): u for u in urls}
+        for fut in as_completed(future_map):
+            res = fut.result()
+            if res is None:
+                skipped_total += 1
+                continue
+            row, text, title = res
+            results.append(row)
+            all_texts.append(text)
+            seo_titles.append(title)
 
     if results:
         # 正規化済み配列（分析ファイルにも保存）
@@ -692,13 +754,30 @@ def main():
             norm_titles.append(s)
 
         # 共通本文サブ文字列（3～12文字・最長一致優先）
-        common_subs = common_substrings_rank_from_norm(
-            norm_texts,
-            min_len=3,
-            max_len=12,
-            top_k=args.rank_k,
-            max_doc_ratio=args.max_common_ratio,
-        )
+        if args.analysis_mode == 'char':
+            common_subs = common_substrings_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        elif args.analysis_mode == 'hybrid':
+            common_subs = hybrid_common_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
+        else:
+            common_subs = common_tokens_rank_from_norm(
+                norm_texts,
+                min_len=3,
+                max_len=12,
+                top_k=args.rank_k,
+                max_doc_ratio=args.max_common_ratio,
+            )
         # SEOタイトルの完全一致ランキング
         title_ranks = rank_equal_titles_from_norm(norm_titles, top_k=args.rank_k)
 
