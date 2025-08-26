@@ -22,7 +22,7 @@ app = Flask(__name__)
 
 def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
                  analyze_chars: int, max_common_ratio: float, analysis_mode: str,
-                 workers: int, remove_trans, remove_patterns):
+                 workers: int, remove_trans, remove_patterns, merge_percent: float):
     """検索と解析を実行し結果を返す"""
     urls = get_search_results(keyword, num_results, delay)
     robots_cache: Dict[str, bool] = {}
@@ -46,7 +46,9 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
         if not html:
             return None
         data = parse_html(html)
-        word_count, top_keywords = analyze_keywords(data["text"])
+        word_count, top_keywords = analyze_keywords(
+            data["text"], merge_threshold=merge_percent / 100.0
+        )
         row = {
             "url": url,
             "domain": domain,
@@ -107,6 +109,7 @@ def index():
             rank_k = int(request.form.get('rank_k', 15))
             max_common_ratio = float(request.form.get('max_common_ratio', 0.8))
             analysis_mode = request.form.get('analysis_mode', 'tiktoken')
+            merge_percent = float(request.form.get('merge_percent', 0.0))
             excl_lines = request.form.get('exclude_patterns', '').splitlines()
             _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
             results, common_subs, title_ranks = run_analysis(
@@ -120,6 +123,7 @@ def index():
                 workers,
                 remove_trans,
                 remove_patterns,
+                merge_percent,
             )
             return render_template(
                 'index.html',

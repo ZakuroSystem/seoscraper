@@ -72,6 +72,10 @@
         <input type="number" id="rank_k" name="rank_k" value="{{ form.rank_k if form else 15 }}">
       </div>
       <div class="form-group">
+        <label for="merge_percent">Merge similar keywords (%)</label>
+        <input type="number" step="0.1" id="merge_percent" name="merge_percent" value="{{ form.merge_percent if form else 0 }}">
+      </div>
+      <div class="form-group">
         <label for="max_common_ratio">Max common substring ratio</label>
         <input type="number" step="0.1" id="max_common_ratio" name="max_common_ratio" value="{{ form.max_common_ratio if form else 0.8 }}">
       </div>

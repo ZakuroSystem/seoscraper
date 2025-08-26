@@ -233,11 +233,66 @@ def extract_domain(url: str) -> str:
     return '.'.join(part for part in [ext.domain, ext.suffix] if part)
 
 
-
 # =========================
 # テキスト解析：語数・キーワード頻度
 # =========================
-def analyze_keywords(text: str, top_n: int = 10) -> Tuple[int, List[Dict[str, int]]]:
+def _insertion_cost(n: int) -> float:
+    if n == 1:
+        return 1.0
+    if n == 2:
+        return 1.5
+    return 3.0
+
+
+def _edit_distance(a: str, b: str) -> float:
+    la, lb = len(a), len(b)
+    dp = [[(0.0, 0) for _ in range(lb + 1)] for _ in range(la + 1)]
+    for i in range(1, la + 1):
+        cost, ins = dp[i - 1][0]
+        dp[i][0] = (cost + 2.0, ins)
+    for j in range(1, lb + 1):
+        cost, ins = dp[0][j - 1]
+        new_ins = ins + 1
+        dp[0][j] = (cost + _insertion_cost(new_ins), new_ins)
+    for i in range(1, la + 1):
+        for j in range(1, lb + 1):
+            # deletion
+            del_cost, del_ins = dp[i - 1][j]
+            del_cost += 2.0
+            # insertion
+            ins_cost, ins_ins = dp[i][j - 1]
+            new_ins = ins_ins + 1
+            ins_cost += _insertion_cost(new_ins)
+            ins_ins = new_ins
+            # substitution / match
+            sub_cost, sub_ins = dp[i - 1][j - 1]
+            if a[i - 1] != b[j - 1]:
+                sub_cost += 3.0
+            candidates = [
+                (del_cost, del_ins),
+                (ins_cost, ins_ins),
+                (sub_cost, sub_ins),
+            ]
+            dp[i][j] = min(candidates, key=lambda x: x[0])
+    return dp[la][lb][0]
+
+
+def _merge_similar(counter: Counter, threshold: float) -> Counter:
+    merged: Dict[str, int] = {}
+    for token, cnt in sorted(counter.items(), key=lambda x: -x[1]):
+        for canon in list(merged.keys()):
+            dist = _edit_distance(token, canon)
+            norm = max(len(token), len(canon)) * 1.5
+            if dist / norm <= threshold:
+                target = token if len(token) > len(canon) else canon
+                merged[target] = merged.pop(canon) + cnt
+                break
+        else:
+            merged[token] = cnt
+    return Counter(merged)
+
+
+def analyze_keywords(text: str, top_n: int = 10, merge_threshold: float = 0.0) -> Tuple[int, List[Dict[str, int]]]:
     tokenizer = analyze_keywords._tokenizer
     tokens: List[str] = []
     for t in tokenizer.tokenize(text):
@@ -246,6 +301,8 @@ def analyze_keywords(text: str, top_n: int = 10) -> Tuple[int, List[Dict[str, in
         if pos == '名詞' and base not in analyze_keywords._stopwords and len(base) > 1:
             tokens.append(base)
     counter = Counter(tokens)
+    if merge_threshold > 0:
+        counter = _merge_similar(counter, merge_threshold)
     total = sum(counter.values())
     top = [{"keyword": k, "count": c} for k, c in counter.most_common(top_n)]
     return total, top
@@ -683,6 +740,8 @@ def main():
     parser.add_argument('--delay', type=float, default=0.0, help='各リクエスト前の待機秒数')
     parser.add_argument('--workers', type=int, default=10, help='同時リクエスト数')
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
+    parser.add_argument('--merge-percent', type=float, default=0.0,
+                        help='類似キーワードを統合する最大編集距離(%)')
     # ログ
     parser.add_argument('--log-file', default=None, help='ログ出力先ファイル（指定しない場合はコンソールのみ）')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'], help='ログレベル')
@@ -785,6 +844,7 @@ def main():
                 "analyze_chars": saved_meta.get("analyze_chars"),
                 "max_common_ratio": args.max_common_ratio,
                 "analysis_mode": args.analysis_mode,
+                "merge_percent": args.merge_percent,
                 "exclude_chars_count": len(saved_excl),
                 "exclude_regex": saved_regex,
                 "exclude_regex_count": len(saved_regex),
@@ -871,7 +931,9 @@ def main():
         if not html:
             return None
         data = parse_html(html)
-        word_count, top_keywords = analyze_keywords(data['text'])
+        word_count, top_keywords = analyze_keywords(
+            data['text'], merge_threshold=args.merge_percent / 100.0
+        )
         row = {
             'url': target_url,
             'domain': domain,
@@ -992,6 +1054,7 @@ def main():
                 "analyze_chars": args.analyze_chars,
                 "max_common_ratio": args.max_common_ratio,
                 "analysis_mode": args.analysis_mode,
+                "merge_percent": args.merge_percent,
                 "exclude_chars": sorted(list(exclude_chars)),
                 "exclude_chars_count": len(exclude_chars),
                 "exclude_regex": [p.pattern for p in exclude_regex],
@@ -1009,6 +1072,7 @@ def main():
                 "analyze_chars": args.analyze_chars,
                 "max_common_ratio": args.max_common_ratio,
                 "analysis_mode": args.analysis_mode,
+                "merge_percent": args.merge_percent,
                 "exclude_chars": sorted(list(exclude_chars)),
                 "exclude_regex": [p.pattern for p in exclude_regex],
                 "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
