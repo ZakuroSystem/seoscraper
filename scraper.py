@@ -18,6 +18,7 @@ from urllib3.util.retry import Retry
 from googlesearch import search
 import tldextract
 import tiktoken
+from janome.tokenizer import Tokenizer
 
 
 # =========================
@@ -237,12 +238,22 @@ def extract_domain(url: str) -> str:
 # テキスト解析：語数・キーワード頻度
 # =========================
 def analyze_keywords(text: str, top_n: int = 10) -> Tuple[int, List[Dict[str, int]]]:
-    tokens = re.findall(r"\w+", text.lower())
-    tokens = [t for t in tokens if len(t) > 1]
+    tokenizer = analyze_keywords._tokenizer
+    tokens: List[str] = []
+    for t in tokenizer.tokenize(text):
+        pos = t.part_of_speech.split(',')[0]
+        base = t.base_form if t.base_form != '*' else t.surface
+        if pos == '名詞' and base not in analyze_keywords._stopwords and len(base) > 1:
+            tokens.append(base)
     counter = Counter(tokens)
     total = sum(counter.values())
     top = [{"keyword": k, "count": c} for k, c in counter.most_common(top_n)]
     return total, top
+
+analyze_keywords._tokenizer = Tokenizer()
+analyze_keywords._stopwords = {
+    'する', 'ます', 'ある', 'いる', 'なる', 'こと', 'これ', 'それ', 'さん'
+}
 
 # =========================
 # 除外定義（文字/正規表現）の読み込み

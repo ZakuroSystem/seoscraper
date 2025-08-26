@@ -4,3 +4,4 @@ beautifulsoup4
 tldextract
 tiktoken
 flask
+janome
