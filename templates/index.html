@@ -8,6 +8,44 @@
 <body>
   <div class="container">
     <h1>SEO Scraper</h1>
+    {% if results %}
+    <h2>Results</h2>
+    <table>
+      <tr><th>URL</th><th>Domain</th><th>Published Time</th><th>Title</th><th>Robots</th><th>Word Count</th><th>Top Keywords</th><th>Text</th></tr>
+      {% for r in results %}
+      <tr>
+        <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
+        <td>{{ r.domain }}</td>
+        <td>{{ r.published_time }}</td>
+        <td>{{ r.title }}</td>
+        <td>{{ 'Yes' if r.robots else 'No' }}</td>
+        <td>{{ r.word_count }}</td>
+        <td>{% for kw in r.top_keywords %}{{ kw.keyword }}:{{ kw.count }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td>
+          <details>
+            <summary>{{ r.text[:50] }}{% if r.text|length > 50 %}...{% endif %}</summary>
+            {{ r.text }}
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+
+    <h2>Common substrings</h2>
+    <ul>
+      {% for item in common_subs %}
+        <li>{{ item.count }} docs ({{ (item.ratio * 100)|round(1) }}%): {{ item.text }}</li>
+      {% endfor %}
+    </ul>
+
+    <h2>Common SEO title substrings</h2>
+    <ul>
+      {% for title, cnt in title_ranks %}
+        <li>{{ cnt }} docs: {{ title }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
     <form method="post">
       <div class="form-group">
         <label for="keyword">Keyword</label>
@@ -19,7 +57,7 @@
       </div>
       <div class="form-group">
         <label for="delay">Delay between requests (sec)</label>
-        <input type="number" step="0.1" id="delay" name="delay" value="{{ form.delay if form else 0.1 }}">
+        <input type="number" step="0.1" id="delay" name="delay" value="{{ form.delay if form else 0.0 }}">
       </div>
       <div class="form-group">
         <label for="workers">Workers</label>
@@ -51,39 +89,6 @@
       </div>
       <button type="submit">Run</button>
     </form>
-
-    {% if results %}
-    <h2>Results</h2>
-    <table>
-      <tr><th>URL</th><th>Domain</th><th>Published Time</th><th>Title</th><th>Robots</th><th>Word Count</th><th>Top Keywords</th><th>Text</th></tr>
-      {% for r in results %}
-      <tr>
-        <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
-        <td>{{ r.domain }}</td>
-        <td>{{ r.published_time }}</td>
-        <td>{{ r.title }}</td>
-        <td>{{ 'Yes' if r.robots else 'No' }}</td>
-        <td>{{ r.word_count }}</td>
-        <td>{% for kw in r.top_keywords %}{{ kw.keyword }}:{{ kw.count }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
-        <td>{{ r.text }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-
-    <h2>Common substrings</h2>
-    <ul>
-      {% for item in common_subs %}
-        <li>{{ item.count }} docs ({{ (item.ratio * 100)|round(1) }}%): {{ item.text }}</li>
-      {% endfor %}
-    </ul>
-
-    <h2>Common SEO title substrings</h2>
-    <ul>
-      {% for title, cnt in title_ranks %}
-        <li>{{ cnt }} docs: {{ title }}</li>
-      {% endfor %}
-    </ul>
-    {% endif %}
   </div>
 </body>
 </html>

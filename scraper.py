@@ -680,7 +680,7 @@ def main():
     parser = argparse.ArgumentParser(description='ウェブを検索し情報を抽出するツール')
     parser.add_argument('keyword', nargs='?', help='検索キーワード（--analysis-load を使う場合は省略可）')
     parser.add_argument('-n', '--num-results', type=int, default=10, help='取得するURLの件数')
-    parser.add_argument('--delay', type=float, default=0.1, help='各リクエスト前の待機秒数(デフォルト0.1)')
+    parser.add_argument('--delay', type=float, default=0.0, help='各リクエスト前の待機秒数')
     parser.add_argument('--workers', type=int, default=10, help='同時リクエスト数')
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
     # ログ
@@ -844,6 +844,7 @@ def main():
     logging.info('検索開始 keyword="%s" num=%d', args.keyword, args.num_results)
     urls = get_search_results(args.keyword, args.num_results, args.delay)
     session_factory = create_session
+    thread_local = threading.local()
     robots_cache: Dict[str, bool] = {}
     robots_lock = threading.Lock()
     results: List[Dict] = []
@@ -852,7 +853,10 @@ def main():
     skipped_total = 0
 
     def process_url(target_url: str):
-        session = session_factory()
+        session = getattr(thread_local, "session", None)
+        if session is None:
+            session = session_factory()
+            thread_local.session = session
         domain = extract_domain(target_url)
         with robots_lock:
             robots = robots_cache.get(domain)
