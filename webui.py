@@ -14,6 +14,7 @@ from scraper import (
     rank_common_titles,
     filter_common_phrases,
     parse_exclude_lines,
+    analyze_keywords,
 )
 
 app = Flask(__name__)
@@ -45,12 +46,15 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
         if not html:
             return None
         data = parse_html(html)
+        word_count, top_keywords = analyze_keywords(data["text"])
         row = {
             "url": url,
             "domain": domain,
             "published_time": data["published_time"],
             "title": data["title"],
             "robots": robots,
+            "word_count": word_count,
+            "top_keywords": top_keywords,
             "text": data["text"][:analyze_chars],
         }
         return row, data["text"], data["title"]

@@ -55,7 +55,7 @@
     {% if results %}
     <h2>Results</h2>
     <table>
-      <tr><th>URL</th><th>Domain</th><th>Published Time</th><th>Title</th><th>Robots</th><th>Text</th></tr>
+      <tr><th>URL</th><th>Domain</th><th>Published Time</th><th>Title</th><th>Robots</th><th>Word Count</th><th>Top Keywords</th><th>Text</th></tr>
       {% for r in results %}
       <tr>
         <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
@@ -63,6 +63,8 @@
         <td>{{ r.published_time }}</td>
         <td>{{ r.title }}</td>
         <td>{{ 'Yes' if r.robots else 'No' }}</td>
+        <td>{{ r.word_count }}</td>
+        <td>{% for kw in r.top_keywords %}{{ kw.keyword }}:{{ kw.count }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
         <td>{{ r.text }}</td>
       </tr>
       {% endfor %}

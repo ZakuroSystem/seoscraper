@@ -3,7 +3,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 from typing import List, Optional, Tuple, Dict, Set, Iterable
-from collections import defaultdict
+from collections import defaultdict, Counter
 import re
 import json
 import csv
@@ -231,6 +231,18 @@ def extract_domain(url: str) -> str:
     ext = tldextract.extract(url)
     return '.'.join(part for part in [ext.domain, ext.suffix] if part)
 
+
+
+# =========================
+# テキスト解析：語数・キーワード頻度
+# =========================
+def analyze_keywords(text: str, top_n: int = 10) -> Tuple[int, List[Dict[str, int]]]:
+    tokens = re.findall(r"\w+", text.lower())
+    tokens = [t for t in tokens if len(t) > 1]
+    counter = Counter(tokens)
+    total = sum(counter.values())
+    top = [{"keyword": k, "count": c} for k, c in counter.most_common(top_n)]
+    return total, top
 
 # =========================
 # 除外定義（文字/正規表現）の読み込み
@@ -598,12 +610,15 @@ def rank_common_titles(
 # 結果・分析ファイルの書き出し／読み込み
 # =========================
 def write_results_csv(path: str, rows: List[Dict]):
-    fieldnames = ["url", "domain", "published_time", "title", "robots", "text"]
+    fieldnames = ["url", "domain", "published_time", "title", "robots", "word_count", "top_keywords", "text"]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in rows:
-            writer.writerow(r)
+            r_copy = r.copy()
+            if isinstance(r_copy.get("top_keywords"), list):
+                r_copy["top_keywords"] = ";".join(f"{k['keyword']}:{k['count']}" for k in r_copy['top_keywords'])
+            writer.writerow(r_copy)
     logging.info("Results CSV written: %s", path)
 
 
@@ -774,6 +789,8 @@ def main():
             print("公開日:　", item['published_time'])
             print("SEOタイトル:", item['title'])
             print("robots.txt:　", "あり" if item['robots'] else "なし")
+            print("語数:", item['word_count'])
+            print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
             print("本文:　", item['text'])
             print("-" * 80)
 
@@ -839,11 +856,14 @@ def main():
         if not html:
             return None
         data = parse_html(html)
+        word_count, top_keywords = analyze_keywords(data['text'])
         row = {
             'url': target_url,
             'domain': domain,
             'published_time': data['published_time'],
             'title': data['title'],
+            'word_count': word_count,
+            'top_keywords': top_keywords,
             'text': data['text'][:args.chars],
             'robots': robots,
         }
@@ -987,6 +1007,8 @@ def main():
             print("公開日:　", item['published_time'])
             print("SEOタイトル:", item['title'])
             print("robots.txt:　", "あり" if item['robots'] else "なし")
+            print("語数:", item['word_count'])
+            print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
             print("本文:　", item['text'])
             print("-" * 80)
 
