@@ -807,6 +807,18 @@ def save_report_markdown(content: str, keyword: str, directory: str = ".") -> st
     return save_markdown(content, keyword, directory)
 
 
+def save_scrape_json(results: List[Dict], keyword: str, directory: str = ".") -> str:
+    """スクレイピング結果をJSONとして保存し、保存先パスを返す。"""
+    os.makedirs(directory, exist_ok=True)
+    safe_kw = re.sub(r"[^0-9A-Za-z_-]+", "_", keyword)[:30]
+    filename = f"{safe_kw}_{int(time.time())}.json"
+    path = os.path.join(directory, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    logging.info("Scrape JSON saved: %s", path)
+    return path
+
+
 # =========================
 # 結果・分析ファイルの書き出し／読み込み
 # =========================

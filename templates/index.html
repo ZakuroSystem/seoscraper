@@ -138,6 +138,30 @@
       <button type="submit" name="action" value="blog">ブログ作成</button>
     </form>
     {% endif %}
+    <h2>スクレイピング履歴</h2>
+    <ul>
+      {% for f in scrape_history %}
+        <li><a href="{{ url_for('static', filename='scrapes/' + f) }}" download>{{ f }}</a></li>
+      {% else %}
+        <li>履歴がありません</li>
+      {% endfor %}
+    </ul>
+    <h2>レポート履歴</h2>
+    <ul>
+      {% for f in report_history %}
+        <li><a href="{{ url_for('static', filename='reports/' + f) }}" download>{{ f }}</a></li>
+      {% else %}
+        <li>履歴がありません</li>
+      {% endfor %}
+    </ul>
+    <h2>ブログ履歴</h2>
+    <ul>
+      {% for f in blog_history %}
+        <li><a href="{{ url_for('static', filename='blogs/' + f) }}" download>{{ f }}</a></li>
+      {% else %}
+        <li>履歴がありません</li>
+      {% endfor %}
+    </ul>
   </div>
 </body>
 </html>
