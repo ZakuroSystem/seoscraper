@@ -778,6 +778,7 @@ def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
 
 def save_blog_markdown(content: str, keyword: str, directory: str = ".") -> str:
     """ブログ記事をMarkdownファイルとして保存し、パスを返す。"""
+    os.makedirs(directory, exist_ok=True)
     safe_kw = re.sub(r"[^0-9A-Za-z_-]+", "_", keyword)[:30]
     filename = f"{safe_kw}_{int(time.time())}.md"
     path = os.path.join(directory, filename)

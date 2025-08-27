@@ -105,7 +105,7 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
     blog_post = generate_blog_post(keyword, instructions) if instructions else None
     blog_file = None
     if blog_post:
-        static_dir = os.path.join(os.path.dirname(__file__), 'static')
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
         path = save_blog_markdown(blog_post, keyword, directory=static_dir)
         blog_file = os.path.basename(path)
     return results, common_subs, title_ranks, instructions, blog_post, blog_file
