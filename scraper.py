@@ -772,6 +772,7 @@ def generate_blog_instruction(
     results: List[Dict],
     common_subs: List[Dict],
     title_ranks: List[Tuple[str, int]],
+    user_prompt: str = "",
 ) -> Tuple[Optional[str], Optional[str]]:
     """検索結果の概要から SEO ブログ記事の指示書を生成する。"""
     if not have_ollama_model("gpt-oss:20b"):
@@ -792,6 +793,8 @@ def generate_blog_instruction(
         f"共通SEOタイトルフレーズ:\n{titles}\n\n"
         "これらを参考にSEO対策されたブログ記事を書くための指示書を日本語で作成してください。"
     )
+    if user_prompt:
+        prompt += f"\n\n追加指示:\n{user_prompt}"
     messages = [
         {"role": "system", "content": "You are an expert Japanese SEO consultant."},
         {"role": "user", "content": prompt},
@@ -799,7 +802,11 @@ def generate_blog_instruction(
     return ollama_chat("gpt-oss:20b", messages, timeout=120)
 
 
-def generate_blog_post(keyword: str, instructions: str) -> Tuple[Optional[str], Optional[str]]:
+def generate_blog_post(
+    keyword: str,
+    instructions: str,
+    user_prompt: str = "",
+) -> Tuple[Optional[str], Optional[str]]:
     """ブログ指示書からMarkdown形式の記事本文を生成する。"""
     if not have_ollama_model("gpt-oss:20b"):
         msg = "gpt-oss:20b not available"
@@ -810,6 +817,8 @@ def generate_blog_post(keyword: str, instructions: str) -> Tuple[Optional[str], 
         "以下の指示書に従って、日本語でSEOに最適化されたブログ記事をMarkdown形式で作成してください。\n\n"
         f"{instructions}\n"
     )
+    if user_prompt:
+        prompt += f"\n追加指示:\n{user_prompt}\n"
     messages = [
         {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
         {"role": "user", "content": prompt},

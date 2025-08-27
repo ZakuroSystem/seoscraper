@@ -59,6 +59,8 @@ def run_analysis(
     merge_percent: float,
     generate_report: bool,
     generate_blog: bool,
+    report_prompt: str = "",
+    blog_prompt: str = "",
 ):
     """検索と解析を実行し結果を返す"""
     logs = []
@@ -159,7 +161,7 @@ def run_analysis(
             with logs_lock:
                 logs.append("Ollamaで指示書生成をリクエストしています")
             instructions, err = generate_blog_instruction(
-                keyword, results, common_subs, title_ranks
+                keyword, results, common_subs, title_ranks, report_prompt
             )
             if instructions:
                 with logs_lock:
@@ -181,7 +183,7 @@ def run_analysis(
                 try:
                     with logs_lock:
                         logs.append("Ollamaでブログ生成をリクエストしています")
-                    blog_post, err = generate_blog_post(keyword, instructions)
+                    blog_post, err = generate_blog_post(keyword, instructions, blog_prompt)
                     if blog_post:
                         static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
                         path = save_blog_markdown(blog_post, keyword, directory=static_dir)
@@ -254,6 +256,8 @@ def index():
                     'blog_post': None,
                     'blog_html': None,
                     'blog_file': None,
+                    'report_prompt': '',
+                    'blog_prompt': '',
                 }
                 hist = get_histories()
                 return render_template(
@@ -269,6 +273,8 @@ def index():
                     blog_file=None,
                     logs=logs,
                     form=request.form,
+                    report_prompt='',
+                    blog_prompt='',
                     scrape_history=hist['scrapes'],
                     report_history=hist['reports'],
                     blog_history=hist['blogs'],
@@ -276,6 +282,7 @@ def index():
         elif action == 'report' and last_state.get('results'):
             logs = last_state.get('logs', []).copy()
             keyword = last_state['keyword']
+            report_prompt = request.form.get('report_prompt', '')
             if have_ollama_model("gpt-oss:20b"):
                 logs.append("Ollamaで指示書生成をリクエストしています")
                 instructions, err = generate_blog_instruction(
@@ -283,6 +290,7 @@ def index():
                     last_state['results'],
                     last_state['common_subs'],
                     last_state['title_ranks'],
+                    report_prompt,
                 )
                 if instructions:
                     static_dir = os.path.join(os.path.dirname(__file__), 'static', 'reports')
@@ -297,7 +305,7 @@ def index():
                 report_file = None
                 logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
             instructions_html = markdown.markdown(instructions) if instructions else None
-            last_state.update({'instructions': instructions, 'instructions_html': instructions_html, 'report_file': report_file, 'logs': logs})
+            last_state.update({'instructions': instructions, 'instructions_html': instructions_html, 'report_file': report_file, 'logs': logs, 'report_prompt': report_prompt})
             hist = get_histories()
             return render_template(
                 'index.html',
@@ -312,6 +320,8 @@ def index():
                 blog_file=None,
                 logs=logs,
                 form=last_state.get('form'),
+                report_prompt=report_prompt,
+                blog_prompt='',
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
@@ -319,9 +329,10 @@ def index():
         elif action == 'blog' and last_state.get('instructions'):
             logs = last_state.get('logs', []).copy()
             keyword = last_state['keyword']
+            blog_prompt = request.form.get('blog_prompt', '')
             if have_ollama_model("gpt-oss:20b"):
                 logs.append("Ollamaでブログ生成をリクエストしています")
-                blog_post, err = generate_blog_post(keyword, last_state['instructions'])
+                blog_post, err = generate_blog_post(keyword, last_state['instructions'], blog_prompt)
                 if blog_post:
                     static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
                     path = save_blog_markdown(blog_post, keyword, directory=static_dir)
@@ -335,7 +346,7 @@ def index():
                 blog_file = None
                 logs.append("gpt-oss:20bが見つからないためブログ生成をスキップしました")
             blog_html = markdown.markdown(blog_post) if blog_post else None
-            last_state.update({'blog_post': blog_post, 'blog_html': blog_html, 'blog_file': blog_file, 'logs': logs})
+            last_state.update({'blog_post': blog_post, 'blog_html': blog_html, 'blog_file': blog_file, 'logs': logs, 'blog_prompt': blog_prompt})
             hist = get_histories()
             return render_template(
                 'index.html',
@@ -350,6 +361,8 @@ def index():
                 blog_file=blog_file,
                 logs=logs,
                 form=last_state.get('form'),
+                report_prompt=last_state.get('report_prompt', ''),
+                blog_prompt=blog_prompt,
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
@@ -366,6 +379,8 @@ def index():
         blog_html=None,
         blog_file=None,
         logs=None,
+        report_prompt='',
+        blog_prompt='',
         scrape_history=hist['scrapes'],
         report_history=hist['reports'],
         blog_history=hist['blogs'],

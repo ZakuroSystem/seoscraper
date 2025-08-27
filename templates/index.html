@@ -130,11 +130,19 @@
     </form>
     {% if results and not instructions %}
     <form method="post">
+      <div class="form-group" style="margin-bottom:0.5em;">
+        <label for="report_prompt">追加指示</label>
+        <textarea id="report_prompt" name="report_prompt" rows="3">{{ report_prompt }}</textarea>
+      </div>
       <button type="submit" name="action" value="report">レポート作成</button>
     </form>
     {% endif %}
     {% if instructions and not blog_post %}
     <form method="post">
+      <div class="form-group" style="margin-bottom:0.5em;">
+        <label for="blog_prompt">追加指示</label>
+        <textarea id="blog_prompt" name="blog_prompt" rows="3">{{ blog_prompt }}</textarea>
+      </div>
       <button type="submit" name="action" value="blog">ブログ作成</button>
     </form>
     {% endif %}
