@@ -24,9 +24,20 @@ from scraper import (
 app = Flask(__name__)
 
 
-def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
-                 analyze_chars: int, max_common_ratio: float, analysis_mode: str,
-                 workers: int, remove_trans, remove_patterns, merge_percent: float):
+def run_analysis(
+    keyword: str,
+    num_results: int,
+    delay: float,
+    rank_k: int,
+    analyze_chars: int,
+    max_common_ratio: float,
+    analysis_mode: str,
+    workers: int,
+    remove_trans,
+    remove_patterns,
+    merge_percent: float,
+    generate_blog: bool,
+):
     """検索と解析を実行し結果を返す"""
     urls = get_search_results(keyword, num_results, delay)
     robots_cache: Dict[str, bool] = {}
@@ -105,20 +116,40 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
         remove_patterns=remove_patterns,
         mode=analysis_mode,
     )
+    logs = []
     instructions = generate_blog_instruction(keyword, results, common_subs, title_ranks)
-    blog_post = generate_blog_post(keyword, instructions) if instructions else None
+    if instructions:
+        logs.append("生成指示書を作成しました")
+    else:
+        logs.append("指示書の生成をスキップしました")
+    blog_post = None
     blog_file = None
-    if blog_post:
-        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
-        path = save_blog_markdown(blog_post, keyword, directory=static_dir)
-        blog_file = os.path.basename(path)
-    return results, common_subs, title_ranks, instructions, blog_post, blog_file
+    if generate_blog:
+        if instructions:
+            try:
+                logs.append("ブログ記事を生成しています")
+                blog_post = generate_blog_post(keyword, instructions)
+                if blog_post:
+                    static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+                    path = save_blog_markdown(blog_post, keyword, directory=static_dir)
+                    blog_file = os.path.basename(path)
+                    logs.append("ブログ記事を保存しました")
+                else:
+                    logs.append("ブログ生成結果が空でした")
+            except Exception as e:
+                logs.append(f"ブログ生成エラー: {e}")
+        else:
+            logs.append("指示書がないためブログ生成をスキップしました")
+    else:
+        logs.append("ブログ生成をスキップしました")
+    return results, common_subs, title_ranks, instructions, blog_post, blog_file, logs
 
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         keyword = request.form.get('keyword', '')
+        action = request.form.get('action', 'report')
         if keyword:
             num_results = int(request.form.get('num_results', 10))
             delay = float(request.form.get('delay', 0.1))
@@ -130,7 +161,7 @@ def index():
             merge_percent = float(request.form.get('merge_percent', 0.0))
             excl_lines = request.form.get('exclude_patterns', '').splitlines()
             _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
-            results, common_subs, title_ranks, instructions, blog_post, blog_file = run_analysis(
+            results, common_subs, title_ranks, instructions, blog_post, blog_file, logs = run_analysis(
                 keyword,
                 num_results,
                 delay,
@@ -142,6 +173,7 @@ def index():
                 remove_trans,
                 remove_patterns,
                 merge_percent,
+                action == 'blog',
             )
             return render_template(
                 'index.html',
@@ -151,9 +183,10 @@ def index():
                 instructions=instructions,
                 blog_post=blog_post,
                 blog_file=blog_file,
+                logs=logs,
                 form=request.form,
             )
-    return render_template('index.html', results=None, form=None, instructions=None, blog_post=None, blog_file=None)
+    return render_template('index.html', results=None, form=None, instructions=None, blog_post=None, blog_file=None, logs=None)
 
 
 if __name__ == '__main__':

@@ -66,6 +66,10 @@
     <p><a href="{{ url_for('static', filename='blogs/' + blog_file) }}" download>Markdownダウンロード</a></p>
     {% endif %}
     {% endif %}
+    {% if logs %}
+    <h2>ログ</h2>
+    <pre>{{ '\n'.join(logs) }}</pre>
+    {% endif %}
     {% endif %}
 
     <form method="post">
@@ -113,7 +117,8 @@
         <label for="exclude_patterns">除外パターン（1行につき1つ、/regex/可）</label>
         <textarea id="exclude_patterns" name="exclude_patterns" rows="4">{{ form.exclude_patterns if form else '' }}</textarea>
       </div>
-      <button type="submit">実行</button>
+      <button type="submit" name="action" value="report">レポート作成</button>
+      <button type="submit" name="action" value="blog">ブログ作成</button>
     </form>
   </div>
 </body>
