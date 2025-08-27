@@ -723,15 +723,29 @@ def have_ollama_model(name: str) -> bool:
 
 
 def ollama_chat(
-    model: str, messages: List[Dict[str, str]], timeout: int = 60
+    model: str, messages: List[Dict[str, str]], timeout: int = 120
 ) -> Tuple[Optional[str], Optional[str]]:
     """Send a chat request to the Ollama server and return the response text.
 
-    Returns a tuple of (content, error_message). On success, error_message is None.
+    Before the main request, a small "Hello" handshake is performed (60s timeout)
+    to ensure the backend model is responsive. Returns a tuple of
+    (content, error_message). On success, error_message is None.
     """
     try:
         import json
         import requests
+
+        # handshake
+        hello_payload = {"model": model, "messages": [{"role": "user", "content": "Hello"}]}
+        hello_resp = requests.post(
+            f"{OLLAMA_API_BASE}/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(hello_payload),
+            timeout=60,
+        )
+        hello_data = hello_resp.json()
+        if hello_resp.status_code != 200 or "error" in hello_data:
+            raise RuntimeError(hello_data.get("error", hello_resp.text))
 
         payload = {"model": model, "messages": messages}
         resp = requests.post(
@@ -782,7 +796,7 @@ def generate_blog_instruction(
         {"role": "system", "content": "You are an expert Japanese SEO consultant."},
         {"role": "user", "content": prompt},
     ]
-    return ollama_chat("gpt-oss:20b", messages, timeout=30)
+    return ollama_chat("gpt-oss:20b", messages, timeout=120)
 
 
 def generate_blog_post(keyword: str, instructions: str) -> Tuple[Optional[str], Optional[str]]:
@@ -800,7 +814,7 @@ def generate_blog_post(keyword: str, instructions: str) -> Tuple[Optional[str], 
         {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
         {"role": "user", "content": prompt},
     ]
-    return ollama_chat("gpt-oss:20b", messages, timeout=60)
+    return ollama_chat("gpt-oss:20b", messages, timeout=120)
 
 def save_markdown(content: str, keyword: str, directory: str = ".") -> str:
     """Markdownファイルとして保存し、保存先パスを返す。"""
