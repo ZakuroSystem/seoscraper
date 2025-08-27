@@ -9,8 +9,10 @@
   <div class="container">
     <h1>SEOスクレイパー</h1>
     {% if results %}
-    <h2>検索結果</h2>
-    <table>
+    <details>
+      <summary>ページ別の詳細を表示</summary>
+      <h2>検索結果</h2>
+      <table>
       <tr><th>URL</th><th>ドメイン</th><th>公開日</th><th>SEOタイトル</th><th>説明</th><th>robots.txt</th><th>語数</th><th>上位キーワード</th><th>画像数</th><th>リンク数</th><th>本文</th></tr>
       {% for r in results %}
       <tr>
@@ -37,7 +39,8 @@
         </td>
       </tr>
       {% endfor %}
-    </table>
+      </table>
+    </details>
 
     <h2>共通本文サブ文字列</h2>
     <ul>

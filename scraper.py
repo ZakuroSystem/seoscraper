@@ -875,6 +875,7 @@ def main():
     # 出力
     parser.add_argument('--results-csv', default=None, help='結果CSVのパス')
     parser.add_argument('--results-json', default=None, help='結果JSONのパス')
+    parser.add_argument('--show-pages', action='store_true', help='ページ別の生データを表示する')
     # 共通判定パラメータ
     parser.add_argument('--rank-k', type=int, default=15, help='ランキングの表示件数（共通本文サブ文字列 / 共通SEOタイトルサブ文字列）')
     parser.add_argument('--analyze-chars', type=int, default=5000, help='共通判定に用いる本文の先頭文字数（デフォルト5000）')
@@ -978,20 +979,21 @@ def main():
             }
             write_results_json(args.results_json, results, meta)
 
-        # 従来の出力
-        for item in results:
-            print("URL:", item['url'])
-            print("ドメイン:", item['domain'])
-            print("公開日:　", item['published_time'])
-            print("SEOタイトル:", item['title'])
-            print("説明:", item.get('description', ''))
-            print("robots.txt:　", "あり" if item['robots'] else "なし")
-            print("語数:", item['word_count'])
-            print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
-            print("画像数:", item.get('images'))
-            print("リンク数:", item.get('links'))
-            print("本文:　", item['text'])
-            print("-" * 80)
+        # 従来の出力（--show-pages 指定時のみ）
+        if args.show_pages:
+            for item in results:
+                print("URL:", item['url'])
+                print("ドメイン:", item['domain'])
+                print("公開日:　", item['published_time'])
+                print("SEOタイトル:", item['title'])
+                print("説明:", item.get('description', ''))
+                print("robots.txt:　", "あり" if item['robots'] else "なし")
+                print("語数:", item['word_count'])
+                print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
+                print("画像数:", item.get('images'))
+                print("リンク数:", item.get('links'))
+                print("本文:　", item['text'])
+                print("-" * 80)
 
         unit = "文字" if args.analysis_mode == 'char' else "トークン"
         enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
@@ -1231,20 +1233,21 @@ def main():
             }
             save_analysis(args.analysis_save, meta_for_analysis, norm_texts, norm_titles, results)
 
-        # ====== コンソール出力（従来の結果一覧） ======
-        for item in results:
-            print("URL:", item['url'])
-            print("ドメイン:", item['domain'])
-            print("公開日:　", item['published_time'])
-            print("SEOタイトル:", item['title'])
-            print("説明:", item.get('description', ''))
-            print("robots.txt:　", "あり" if item['robots'] else "なし")
-            print("語数:", item['word_count'])
-            print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
-            print("画像数:", item.get('images'))
-            print("リンク数:", item.get('links'))
-            print("本文:　", item['text'])
-            print("-" * 80)
+        # ====== コンソール出力（従来の結果一覧：--show-pages 指定時のみ） ======
+        if args.show_pages:
+            for item in results:
+                print("URL:", item['url'])
+                print("ドメイン:", item['domain'])
+                print("公開日:　", item['published_time'])
+                print("SEOタイトル:", item['title'])
+                print("説明:", item.get('description', ''))
+                print("robots.txt:　", "あり" if item['robots'] else "なし")
+                print("語数:", item['word_count'])
+                print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
+                print("画像数:", item.get('images'))
+                print("リンク数:", item.get('links'))
+                print("本文:　", item['text'])
+                print("-" * 80)
 
         unit = "文字" if args.analysis_mode == 'char' else "トークン"
         enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
