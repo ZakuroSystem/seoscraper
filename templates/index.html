@@ -2,86 +2,174 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>SEO Scraper</title>
+  <title>SEOスクレイパー</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <div class="container">
-    <h1>SEO Scraper</h1>
-    <form method="post">
-      <div class="form-group">
-        <label for="keyword">Keyword</label>
-        <input type="text" id="keyword" name="keyword" value="{{ form.keyword if form else '' }}">
-      </div>
-      <div class="form-group">
-        <label for="num_results">Number of results</label>
-        <input type="number" id="num_results" name="num_results" value="{{ form.num_results if form else 10 }}">
-      </div>
-      <div class="form-group">
-        <label for="delay">Delay between requests (sec)</label>
-        <input type="number" step="0.1" id="delay" name="delay" value="{{ form.delay if form else 0.1 }}">
-      </div>
-      <div class="form-group">
-        <label for="workers">Workers</label>
-        <input type="number" id="workers" name="workers" value="{{ form.workers if form else 10 }}">
-      </div>
-      <div class="form-group">
-        <label for="analyze_chars">Analyze characters</label>
-        <input type="number" id="analyze_chars" name="analyze_chars" value="{{ form.analyze_chars if form else 5000 }}">
-      </div>
-      <div class="form-group">
-        <label for="rank_k">Top K</label>
-        <input type="number" id="rank_k" name="rank_k" value="{{ form.rank_k if form else 15 }}">
-      </div>
-      <div class="form-group">
-        <label for="max_common_ratio">Max common substring ratio</label>
-        <input type="number" step="0.1" id="max_common_ratio" name="max_common_ratio" value="{{ form.max_common_ratio if form else 0.8 }}">
-      </div>
-      <div class="form-group">
-        <label for="analysis_mode">Analysis mode</label>
-        <select id="analysis_mode" name="analysis_mode">
-          {% for m in ['tiktoken','char','hybrid'] %}
-            <option value="{{ m }}" {% if form and form.analysis_mode == m %}selected{% endif %}>{{ m }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="exclude_patterns">Exclude patterns (one per line, /regex/ allowed)</label>
-        <textarea id="exclude_patterns" name="exclude_patterns" rows="4">{{ form.exclude_patterns if form else '' }}</textarea>
-      </div>
-      <button type="submit">Run</button>
-    </form>
-
+    <h1>SEOスクレイパー</h1>
     {% if results %}
-    <h2>Results</h2>
-    <table>
-      <tr><th>URL</th><th>Domain</th><th>Published Time</th><th>Title</th><th>Robots</th><th>Text</th></tr>
+    <details>
+      <summary>ページ別の詳細を表示</summary>
+      <h2>検索結果</h2>
+      <div class="table-wrapper">
+      <table>
+      <tr><th>URL</th><th>ドメイン</th><th>公開日</th><th>SEOタイトル</th><th>説明</th><th>robots.txt</th><th>語数</th><th>上位キーワード</th><th>画像数</th><th>リンク数</th><th>本文</th></tr>
       {% for r in results %}
       <tr>
         <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
         <td>{{ r.domain }}</td>
         <td>{{ r.published_time }}</td>
         <td>{{ r.title }}</td>
-        <td>{{ 'Yes' if r.robots else 'No' }}</td>
-        <td>{{ r.text }}</td>
+        <td>
+          <details>
+            <summary>{{ r.description[:50] }}{% if r.description|length > 50 %}...{% endif %}</summary>
+            {{ r.description }}
+          </details>
+        </td>
+        <td>{{ 'あり' if r.robots else 'なし' }}</td>
+        <td>{{ r.word_count }}</td>
+        <td>{% for kw in r.top_keywords %}{{ kw.keyword }}:{{ kw.count }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td>{{ r.images }}</td>
+        <td>{{ r.links }}</td>
+        <td>
+          <details>
+            <summary>{{ r.text[:50] }}{% if r.text|length > 50 %}...{% endif %}</summary>
+            {{ r.text }}
+          </details>
+        </td>
       </tr>
       {% endfor %}
-    </table>
+      </table>
+      </div>
+    </details>
 
-    <h2>Common substrings</h2>
+    <h2>共通本文サブ文字列</h2>
     <ul>
       {% for item in common_subs %}
-        <li>{{ item.count }} docs ({{ (item.ratio * 100)|round(1) }}%): {{ item.text }}</li>
+        <li>{{ item.count }} 件 ({{ (item.ratio * 100)|round(1) }}%): {{ item.text }}</li>
       {% endfor %}
     </ul>
 
-    <h2>Common SEO title substrings</h2>
+    <h2>共通SEOタイトルサブ文字列</h2>
     <ul>
       {% for title, cnt in title_ranks %}
-        <li>{{ cnt }} docs: {{ title }}</li>
+        <li>{{ cnt }} 件: {{ title }}</li>
       {% endfor %}
     </ul>
+    {% if instructions %}
+    <h2>ブログ作成指示書</h2>
+    <div class="markdown-preview">{{ instructions_html|safe }}</div>
+    <details><summary>Markdownを表示</summary><pre>{{ instructions }}</pre></details>
+    {% if report_file %}
+    <p><a href="{{ url_for('static', filename='reports/' + report_file) }}" download>レポートダウンロード</a></p>
     {% endif %}
+    {% endif %}
+    {% if blog_post %}
+    <h2>生成されたブログ記事</h2>
+    <div class="markdown-preview">{{ blog_html|safe }}</div>
+    <details><summary>Markdownを表示</summary><pre>{{ blog_post }}</pre></details>
+    {% if blog_file %}
+    <p><a href="{{ url_for('static', filename='blogs/' + blog_file) }}" download>Markdownダウンロード</a></p>
+    {% endif %}
+    {% endif %}
+    {% if logs %}
+    <h2>ログ</h2>
+    <pre class="logs">{{ '\n'.join(logs) }}</pre>
+    {% endif %}
+    {% endif %}
+
+    <form method="post">
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="keyword">キーワード</label>
+          <input type="text" id="keyword" name="keyword" value="{{ form.keyword if form else '' }}">
+        </div>
+        <div class="form-group">
+          <label for="num_results">取得件数</label>
+          <input type="number" id="num_results" name="num_results" value="{{ form.num_results if form else 10 }}">
+        </div>
+        <div class="form-group">
+          <label for="delay">リクエスト間隔(秒)</label>
+          <input type="number" step="0.1" id="delay" name="delay" value="{{ form.delay if form else 0.0 }}">
+        </div>
+        <div class="form-group">
+          <label for="workers">同時リクエスト数</label>
+          <input type="number" id="workers" name="workers" value="{{ form.workers if form else 10 }}">
+        </div>
+        <div class="form-group">
+          <label for="analyze_chars">分析文字数</label>
+          <input type="number" id="analyze_chars" name="analyze_chars" value="{{ form.analyze_chars if form else 5000 }}">
+        </div>
+        <div class="form-group">
+          <label for="rank_k">ランキング上位件数</label>
+          <input type="number" id="rank_k" name="rank_k" value="{{ form.rank_k if form else 15 }}">
+        </div>
+        <div class="form-group">
+          <label for="merge_percent">類似キーワード統合 (%)</label>
+          <input type="number" step="0.1" id="merge_percent" name="merge_percent" value="{{ form.merge_percent if form else 0 }}">
+        </div>
+        <div class="form-group">
+          <label for="max_common_ratio">共通サブ文字列の最大出現率</label>
+          <input type="number" step="0.1" id="max_common_ratio" name="max_common_ratio" value="{{ form.max_common_ratio if form else 0.8 }}">
+        </div>
+        <div class="form-group">
+          <label for="analysis_mode">解析モード</label>
+          <select id="analysis_mode" name="analysis_mode">
+            {% for m in ['tiktoken','char','hybrid'] %}
+              <option value="{{ m }}" {% if form and form.analysis_mode == m %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group" style="flex: 1 1 100%;">
+          <label for="exclude_patterns">除外パターン（1行につき1つ、/regex/可）</label>
+          <textarea id="exclude_patterns" name="exclude_patterns" rows="4">{{ form.exclude_patterns if form else '' }}</textarea>
+        </div>
+      </div>
+      <button type="submit" name="action" value="scrape">実行</button>
+    </form>
+    {% if results and not instructions %}
+    <form method="post">
+      <div class="form-group" style="margin-bottom:0.5em;">
+        <label for="report_prompt">追加指示</label>
+        <textarea id="report_prompt" name="report_prompt" rows="3">{{ report_prompt }}</textarea>
+      </div>
+      <button type="submit" name="action" value="report">レポート作成</button>
+    </form>
+    {% endif %}
+    {% if instructions and not blog_post %}
+    <form method="post">
+      <div class="form-group" style="margin-bottom:0.5em;">
+        <label for="blog_prompt">追加指示</label>
+        <textarea id="blog_prompt" name="blog_prompt" rows="3">{{ blog_prompt }}</textarea>
+      </div>
+      <button type="submit" name="action" value="blog">ブログ作成</button>
+    </form>
+    {% endif %}
+    <h2>スクレイピング履歴</h2>
+    <ul>
+      {% for f in scrape_history %}
+        <li><a href="{{ url_for('static', filename='scrapes/' + f) }}" download>{{ f }}</a></li>
+      {% else %}
+        <li>履歴がありません</li>
+      {% endfor %}
+    </ul>
+    <h2>レポート履歴</h2>
+    <ul>
+      {% for f in report_history %}
+        <li><a href="{{ url_for('static', filename='reports/' + f) }}" download>{{ f }}</a></li>
+      {% else %}
+        <li>履歴がありません</li>
+      {% endfor %}
+    </ul>
+    <h2>ブログ履歴</h2>
+    <ul>
+      {% for f in blog_history %}
+        <li><a href="{{ url_for('static', filename='blogs/' + f) }}" download>{{ f }}</a></li>
+      {% else %}
+        <li>履歴がありません</li>
+      {% endfor %}
+    </ul>
   </div>
 </body>
 </html>
