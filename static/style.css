@@ -22,6 +22,16 @@ form .form-group {
   margin-bottom: 15px;
 }
 
+.form-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.form-grid .form-group {
+  flex: 1 1 45%;
+}
+
 label {
   display: block;
   font-weight: bold;
@@ -55,6 +65,10 @@ button:hover {
   background-color: #0056b3;
 }
 
+.table-wrapper {
+  overflow-x: auto;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -77,4 +91,12 @@ tr:nth-child(even) {
 ul {
   list-style-type: disc;
   padding-left: 20px;
+}
+
+.logs {
+  max-height: 200px;
+  overflow-y: auto;
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  padding: 10px;
 }
