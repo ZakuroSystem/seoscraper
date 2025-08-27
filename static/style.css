@@ -100,3 +100,11 @@ ul {
   border: 1px solid #ddd;
   padding: 10px;
 }
+.markdown-preview {
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  padding: 10px;
+  margin-bottom: 10px;
+  max-height: 400px;
+  overflow-y: auto;
+}

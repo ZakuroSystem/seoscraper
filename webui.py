@@ -3,6 +3,7 @@ from flask import Flask, render_template, request, url_for
 import threading
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import markdown
 
 from scraper import (
     create_session,
@@ -227,6 +228,12 @@ def index():
                     'title_ranks': title_ranks,
                     'logs': logs,
                     'form': request.form,
+                    'instructions': None,
+                    'instructions_html': None,
+                    'report_file': None,
+                    'blog_post': None,
+                    'blog_html': None,
+                    'blog_file': None,
                 }
                 return render_template(
                     'index.html',
@@ -234,8 +241,10 @@ def index():
                     common_subs=common_subs,
                     title_ranks=title_ranks,
                     instructions=None,
+                    instructions_html=None,
                     report_file=None,
                     blog_post=None,
+                    blog_html=None,
                     blog_file=None,
                     logs=logs,
                     form=request.form,
@@ -263,15 +272,18 @@ def index():
                 instructions = None
                 report_file = None
                 logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
-            last_state.update({'instructions': instructions, 'report_file': report_file, 'logs': logs})
+            instructions_html = markdown.markdown(instructions) if instructions else None
+            last_state.update({'instructions': instructions, 'instructions_html': instructions_html, 'report_file': report_file, 'logs': logs})
             return render_template(
                 'index.html',
                 results=last_state['results'],
                 common_subs=last_state['common_subs'],
                 title_ranks=last_state['title_ranks'],
                 instructions=instructions,
+                instructions_html=instructions_html,
                 report_file=report_file,
                 blog_post=None,
+                blog_html=None,
                 blog_file=None,
                 logs=logs,
                 form=last_state.get('form'),
@@ -294,15 +306,18 @@ def index():
                 blog_post = None
                 blog_file = None
                 logs.append("gpt-oss:20bが見つからないためブログ生成をスキップしました")
-            last_state.update({'blog_post': blog_post, 'blog_file': blog_file, 'logs': logs})
+            blog_html = markdown.markdown(blog_post) if blog_post else None
+            last_state.update({'blog_post': blog_post, 'blog_html': blog_html, 'blog_file': blog_file, 'logs': logs})
             return render_template(
                 'index.html',
                 results=last_state['results'],
                 common_subs=last_state['common_subs'],
                 title_ranks=last_state['title_ranks'],
                 instructions=last_state.get('instructions'),
+                instructions_html=last_state.get('instructions_html'),
                 report_file=last_state.get('report_file'),
                 blog_post=blog_post,
+                blog_html=blog_html,
                 blog_file=blog_file,
                 logs=logs,
                 form=last_state.get('form'),
@@ -312,8 +327,10 @@ def index():
         results=None,
         form=None,
         instructions=None,
+        instructions_html=None,
         report_file=None,
         blog_post=None,
+        blog_html=None,
         blog_file=None,
         logs=None,
     )
