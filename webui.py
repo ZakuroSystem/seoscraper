@@ -19,6 +19,7 @@ from scraper import (
     generate_blog_instruction,
     generate_blog_post,
     save_blog_markdown,
+    have_ollama_model,
 )
 
 app = Flask(__name__)
@@ -39,7 +40,14 @@ def run_analysis(
     generate_blog: bool,
 ):
     """検索と解析を実行し結果を返す"""
+    logs = []
+    logs_lock = threading.Lock()
+
+    with logs_lock:
+        logs.append(f"Google検索に問い合わせ中: {keyword}")
     urls = get_search_results(keyword, num_results, delay)
+    with logs_lock:
+        logs.append(f"検索結果を{len(urls)}件取得しました")
     robots_cache: Dict[str, bool] = {}
     robots_lock = threading.Lock()
     results = []
@@ -52,6 +60,8 @@ def run_analysis(
         if session is None:
             session = create_session()
             thread_local.session = session
+        with logs_lock:
+            logs.append(f"スクレイピング開始: {url}")
         domain = extract_domain(url)
         with robots_lock:
             robots = robots_cache.get(domain)
@@ -60,9 +70,13 @@ def run_analysis(
             with robots_lock:
                 robots_cache[domain] = robots
         if not robots:
+            with logs_lock:
+                logs.append(f"robots.txtでアクセス拒否: {url}")
             return None
         html = fetch_html(session, url)
         if not html:
+            with logs_lock:
+                logs.append(f"取得失敗: {url}")
             return None
         data = parse_html(html)
         word_count, top_keywords = analyze_keywords(
@@ -81,6 +95,8 @@ def run_analysis(
             "top_keywords": top_keywords,
             "text": data["text"][:analyze_chars],
         }
+        with logs_lock:
+            logs.append(f"スクレイピング完了: {url}")
         return row, data["text"], data["title"]
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -116,32 +132,50 @@ def run_analysis(
         remove_patterns=remove_patterns,
         mode=analysis_mode,
     )
-    logs = []
-    instructions = generate_blog_instruction(keyword, results, common_subs, title_ranks)
-    if instructions:
-        logs.append("生成指示書を作成しました")
+    if have_ollama_model("gpt-oss:20b"):
+        with logs_lock:
+            logs.append("Ollamaで指示書生成をリクエストしています")
+        instructions = generate_blog_instruction(keyword, results, common_subs, title_ranks)
+        if instructions:
+            with logs_lock:
+                logs.append("指示書を生成しました")
+        else:
+            with logs_lock:
+                logs.append("指示書生成が空でした")
     else:
-        logs.append("指示書の生成をスキップしました")
+        instructions = None
+        with logs_lock:
+            logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
     blog_post = None
     blog_file = None
     if generate_blog:
         if instructions:
-            try:
-                logs.append("ブログ記事を生成しています")
-                blog_post = generate_blog_post(keyword, instructions)
-                if blog_post:
-                    static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
-                    path = save_blog_markdown(blog_post, keyword, directory=static_dir)
-                    blog_file = os.path.basename(path)
-                    logs.append("ブログ記事を保存しました")
-                else:
-                    logs.append("ブログ生成結果が空でした")
-            except Exception as e:
-                logs.append(f"ブログ生成エラー: {e}")
+            if have_ollama_model("gpt-oss:20b"):
+                try:
+                    with logs_lock:
+                        logs.append("Ollamaでブログ生成をリクエストしています")
+                    blog_post = generate_blog_post(keyword, instructions)
+                    if blog_post:
+                        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+                        path = save_blog_markdown(blog_post, keyword, directory=static_dir)
+                        blog_file = os.path.basename(path)
+                        with logs_lock:
+                            logs.append("ブログ記事を保存しました")
+                    else:
+                        with logs_lock:
+                            logs.append("ブログ生成結果が空でした")
+                except Exception as e:
+                    with logs_lock:
+                        logs.append(f"ブログ生成エラー: {e}")
+            else:
+                with logs_lock:
+                    logs.append("gpt-oss:20bが見つからないためブログ生成をスキップしました")
         else:
-            logs.append("指示書がないためブログ生成をスキップしました")
+            with logs_lock:
+                logs.append("指示書がないためブログ生成をスキップしました")
     else:
-        logs.append("ブログ生成をスキップしました")
+        with logs_lock:
+            logs.append("ブログ生成をスキップしました")
     return results, common_subs, title_ranks, instructions, blog_post, blog_file, logs
 
 
@@ -190,5 +224,5 @@ def index():
 
 
 if __name__ == '__main__':
-    app.run(port=5000)
+    app.run(port=5007)
 
