@@ -220,11 +220,35 @@ def parse_html(html: str) -> dict:
     if not seo_title:
         seo_title = 'N/A'
 
-    logging.debug("Parsed title=%s published=%s", seo_title, published_time)
+    desc_selectors = [
+        ('meta', {'name': 'description'}),
+        ('meta', {'property': 'og:description'}),
+        ('meta', {'name': 'twitter:description'}),
+    ]
+    description = ''
+    for tag, attrs in desc_selectors:
+        el = soup.find(tag, attrs=attrs)
+        if el and el.get('content'):
+            description = el['content']
+            break
+    image_count = len(soup.find_all('img'))
+    link_count = len(soup.find_all('a'))
+
+    logging.debug(
+        "Parsed title=%s published=%s desc_len=%d images=%d links=%d",
+        seo_title,
+        published_time,
+        len(description),
+        image_count,
+        link_count,
+    )
     return {
         'text': text,
         'published_time': published_time,
-        'title': seo_title
+        'title': seo_title,
+        'description': description,
+        'images': image_count,
+        'links': link_count,
     }
 
 
@@ -678,7 +702,19 @@ def rank_common_titles(
 # 結果・分析ファイルの書き出し／読み込み
 # =========================
 def write_results_csv(path: str, rows: List[Dict]):
-    fieldnames = ["url", "domain", "published_time", "title", "robots", "word_count", "top_keywords", "text"]
+    fieldnames = [
+        "url",
+        "domain",
+        "published_time",
+        "title",
+        "description",
+        "robots",
+        "word_count",
+        "top_keywords",
+        "images",
+        "links",
+        "text",
+    ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -859,9 +895,12 @@ def main():
             print("ドメイン:", item['domain'])
             print("公開日:　", item['published_time'])
             print("SEOタイトル:", item['title'])
+            print("説明:", item.get('description', ''))
             print("robots.txt:　", "あり" if item['robots'] else "なし")
             print("語数:", item['word_count'])
             print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
+            print("画像数:", item.get('images'))
+            print("リンク数:", item.get('links'))
             print("本文:　", item['text'])
             print("-" * 80)
 
@@ -939,10 +978,13 @@ def main():
             'domain': domain,
             'published_time': data['published_time'],
             'title': data['title'],
+            'description': data['description'],
             'word_count': word_count,
             'top_keywords': top_keywords,
             'text': data['text'][:args.chars],
             'robots': robots,
+            'images': data['images'],
+            'links': data['links'],
         }
         logging.info('OK %s | title="%s" robots=%s', target_url, data['title'], robots)
         return row, data['text'], data['title']
@@ -1085,9 +1127,12 @@ def main():
             print("ドメイン:", item['domain'])
             print("公開日:　", item['published_time'])
             print("SEOタイトル:", item['title'])
+            print("説明:", item.get('description', ''))
             print("robots.txt:　", "あり" if item['robots'] else "なし")
             print("語数:", item['word_count'])
             print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
+            print("画像数:", item.get('images'))
+            print("リンク数:", item.get('links'))
             print("本文:　", item['text'])
             print("-" * 80)
 

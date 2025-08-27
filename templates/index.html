@@ -11,16 +11,24 @@
     {% if results %}
     <h2>検索結果</h2>
     <table>
-      <tr><th>URL</th><th>ドメイン</th><th>公開日</th><th>SEOタイトル</th><th>robots.txt</th><th>語数</th><th>上位キーワード</th><th>本文</th></tr>
+      <tr><th>URL</th><th>ドメイン</th><th>公開日</th><th>SEOタイトル</th><th>説明</th><th>robots.txt</th><th>語数</th><th>上位キーワード</th><th>画像数</th><th>リンク数</th><th>本文</th></tr>
       {% for r in results %}
       <tr>
         <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
         <td>{{ r.domain }}</td>
         <td>{{ r.published_time }}</td>
         <td>{{ r.title }}</td>
+        <td>
+          <details>
+            <summary>{{ r.description[:50] }}{% if r.description|length > 50 %}...{% endif %}</summary>
+            {{ r.description }}
+          </details>
+        </td>
         <td>{{ 'あり' if r.robots else 'なし' }}</td>
         <td>{{ r.word_count }}</td>
         <td>{% for kw in r.top_keywords %}{{ kw.keyword }}:{{ kw.count }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td>{{ r.images }}</td>
+        <td>{{ r.links }}</td>
         <td>
           <details>
             <summary>{{ r.text[:50] }}{% if r.text|length > 50 %}...{% endif %}</summary>
