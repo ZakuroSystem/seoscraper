@@ -321,21 +321,24 @@ def _merge_similar(counter: Counter, threshold: float) -> Counter:
 
 
 def analyze_keywords(text: str, top_n: int = 10, merge_threshold: float = 0.0) -> Tuple[int, List[Dict[str, int]]]:
-    tokenizer = analyze_keywords._tokenizer
-    tokens: List[str] = []
+    local = analyze_keywords._local
+    tokenizer = getattr(local, "tokenizer", None)
+    if tokenizer is None:
+        tokenizer = Tokenizer()
+        local.tokenizer = tokenizer
+    counter: Counter = Counter()
     for t in tokenizer.tokenize(text):
         pos = t.part_of_speech.split(',')[0]
         base = t.base_form if t.base_form != '*' else t.surface
         if pos == '名詞' and base not in analyze_keywords._stopwords and len(base) > 1:
-            tokens.append(base)
-    counter = Counter(tokens)
+            counter[base] += 1
     if merge_threshold > 0:
         counter = _merge_similar(counter, merge_threshold)
     total = sum(counter.values())
     top = [{"keyword": k, "count": c} for k, c in counter.most_common(top_n)]
     return total, top
 
-analyze_keywords._tokenizer = Tokenizer()
+analyze_keywords._local = threading.local()
 analyze_keywords._stopwords = {
     'する', 'ます', 'ある', 'いる', 'なる', 'こと', 'これ', 'それ', 'さん'
 }
