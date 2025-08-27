@@ -158,13 +158,15 @@ def run_analysis(
         if have_ollama_model("gpt-oss:20b"):
             with logs_lock:
                 logs.append("Ollamaで指示書生成をリクエストしています")
-            instructions = generate_blog_instruction(keyword, results, common_subs, title_ranks)
+            instructions, err = generate_blog_instruction(
+                keyword, results, common_subs, title_ranks
+            )
             if instructions:
                 with logs_lock:
                     logs.append("指示書を生成しました")
             else:
                 with logs_lock:
-                    logs.append("指示書生成が空でした")
+                    logs.append(f"指示書生成失敗: {err}")
         else:
             with logs_lock:
                 logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
@@ -179,7 +181,7 @@ def run_analysis(
                 try:
                     with logs_lock:
                         logs.append("Ollamaでブログ生成をリクエストしています")
-                    blog_post = generate_blog_post(keyword, instructions)
+                    blog_post, err = generate_blog_post(keyword, instructions)
                     if blog_post:
                         static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
                         path = save_blog_markdown(blog_post, keyword, directory=static_dir)
@@ -188,7 +190,7 @@ def run_analysis(
                             logs.append("ブログ記事を保存しました")
                     else:
                         with logs_lock:
-                            logs.append("ブログ生成結果が空でした")
+                            logs.append(f"ブログ生成失敗: {err}")
                 except Exception as e:
                     with logs_lock:
                         logs.append(f"ブログ生成エラー: {e}")
@@ -276,7 +278,7 @@ def index():
             keyword = last_state['keyword']
             if have_ollama_model("gpt-oss:20b"):
                 logs.append("Ollamaで指示書生成をリクエストしています")
-                instructions = generate_blog_instruction(
+                instructions, err = generate_blog_instruction(
                     keyword,
                     last_state['results'],
                     last_state['common_subs'],
@@ -289,7 +291,7 @@ def index():
                     logs.append("レポートを保存しました")
                 else:
                     report_file = None
-                    logs.append("指示書生成が空でした")
+                    logs.append(f"指示書生成失敗: {err}")
             else:
                 instructions = None
                 report_file = None
@@ -319,7 +321,7 @@ def index():
             keyword = last_state['keyword']
             if have_ollama_model("gpt-oss:20b"):
                 logs.append("Ollamaでブログ生成をリクエストしています")
-                blog_post = generate_blog_post(keyword, last_state['instructions'])
+                blog_post, err = generate_blog_post(keyword, last_state['instructions'])
                 if blog_post:
                     static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
                     path = save_blog_markdown(blog_post, keyword, directory=static_dir)
@@ -327,7 +329,7 @@ def index():
                     logs.append("ブログ記事を保存しました")
                 else:
                     blog_file = None
-                    logs.append("ブログ生成結果が空でした")
+                    logs.append(f"ブログ生成失敗: {err}")
             else:
                 blog_post = None
                 blog_file = None

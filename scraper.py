@@ -722,8 +722,13 @@ def have_ollama_model(name: str) -> bool:
         return False
 
 
-def ollama_chat(model: str, messages: List[Dict[str, str]], timeout: int = 60) -> Optional[str]:
-    """Send a chat request to the Ollama server and return the response text."""
+def ollama_chat(
+    model: str, messages: List[Dict[str, str]], timeout: int = 60
+) -> Tuple[Optional[str], Optional[str]]:
+    """Send a chat request to the Ollama server and return the response text.
+
+    Returns a tuple of (content, error_message). On success, error_message is None.
+    """
     try:
         import json
         import requests
@@ -741,10 +746,11 @@ def ollama_chat(model: str, messages: List[Dict[str, str]], timeout: int = 60) -
         choices = data.get("choices", [])
         if not choices:
             raise RuntimeError("no choices in response")
-        return choices[0].get("message", {}).get("content", "").strip()
+        content = choices[0].get("message", {}).get("content", "").strip()
+        return content, None
     except Exception as e:
         logging.info("Ollama chat failed: %s", e)
-        return None
+        return None, str(e)
 
 
 def generate_blog_instruction(
@@ -752,11 +758,12 @@ def generate_blog_instruction(
     results: List[Dict],
     common_subs: List[Dict],
     title_ranks: List[Tuple[str, int]],
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[str]]:
     """検索結果の概要から SEO ブログ記事の指示書を生成する。"""
     if not have_ollama_model("gpt-oss:20b"):
-        logging.info("Ollama gpt-oss:20b unavailable: model not found")
-        return None
+        msg = "gpt-oss:20b not available"
+        logging.info(msg)
+        return None, msg
     summary_lines = []
     for r in results[:5]:
         kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
@@ -778,11 +785,12 @@ def generate_blog_instruction(
     return ollama_chat("gpt-oss:20b", messages, timeout=30)
 
 
-def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
+def generate_blog_post(keyword: str, instructions: str) -> Tuple[Optional[str], Optional[str]]:
     """ブログ指示書からMarkdown形式の記事本文を生成する。"""
     if not have_ollama_model("gpt-oss:20b"):
-        logging.info("Ollama gpt-oss:20b unavailable: model not found")
-        return None
+        msg = "gpt-oss:20b not available"
+        logging.info(msg)
+        return None, msg
     prompt = (
         f"検索キーワード: {keyword}\n"
         "以下の指示書に従って、日本語でSEOに最適化されたブログ記事をMarkdown形式で作成してください。\n\n"
@@ -1056,13 +1064,13 @@ def main():
         else:
             print("（該当なし）")
 
-        instructions = generate_blog_instruction(
+        instructions, err = generate_blog_instruction(
             saved_meta.get("keyword", args.keyword or ""), results, common_subs, title_ranks
         )
         if instructions:
             print("=== ブログ作成指示書 ===")
             print(instructions)
-            blog_post = generate_blog_post(
+            blog_post, err2 = generate_blog_post(
                 saved_meta.get("keyword", args.keyword or ""), instructions
             )
             if blog_post:
@@ -1073,9 +1081,9 @@ def main():
                 )
                 print(f"Markdownとして保存: {path}")
             else:
-                logging.info("Skip blog writing (gpt-oss:20b not available)")
+                logging.info("Blog generation failed: %s", err2)
         else:
-            logging.info("Skip blog instructions (gpt-oss:20b not available)")
+            logging.info("Instruction generation failed: %s", err)
 
         logging.info("Finished (analysis-load mode). results=%d", len(results))
         return
@@ -1309,22 +1317,22 @@ def main():
                 print(f"[{cnt}件] {repr(title)}")
         else:
             print("（該当なし）")
-        instructions = generate_blog_instruction(
+        instructions, err = generate_blog_instruction(
             args.keyword, results, common_subs, title_ranks
         )
         if instructions:
             print("=== ブログ作成指示書 ===")
             print(instructions)
-            blog_post = generate_blog_post(args.keyword, instructions)
+            blog_post, err2 = generate_blog_post(args.keyword, instructions)
             if blog_post:
                 print("=== 生成ブログ記事 ===")
                 print(blog_post)
                 path = save_blog_markdown(blog_post, args.keyword)
                 print(f"Markdownとして保存: {path}")
             else:
-                logging.info("Skip blog writing (gpt-oss:20b not available)")
+                logging.info("Blog generation failed: %s", err2)
         else:
-            logging.info("Skip blog instructions (gpt-oss:20b not available)")
+            logging.info("Instruction generation failed: %s", err)
 
         logging.info("Finished. results=%d", len(results))
     else:
