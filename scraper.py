@@ -7,6 +7,7 @@ from collections import defaultdict, Counter
 import re
 import json
 import csv
+import os
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -746,7 +747,7 @@ def generate_blog_instruction(
 
 
 def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
-    """ブログ指示書から実際の記事本文を生成する。
+    """ブログ指示書からMarkdown形式の記事本文を生成する。
 
     ローカルに Ollama の gpt-oss:20b モデルが存在しない場合は None を返す。
     """
@@ -754,13 +755,13 @@ def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
         import requests
         prompt = (
             f"検索キーワード: {keyword}\n"
-            "以下の指示書に従って、日本語でSEOに最適化されたブログ記事を作成してください。\n\n"
+            "以下の指示書に従って、日本語でSEOに最適化されたブログ記事をMarkdown形式で作成してください。\n\n"
             f"{instructions}\n"
         )
         payload = {
             "model": "gpt-oss:20b",
             "messages": [
-                {"role": "system", "content": "You are a skilled Japanese blogger."},
+                {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
@@ -773,6 +774,17 @@ def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
     except Exception as e:
         logging.info("Ollama gpt-oss:20b unavailable: %s", e)
         return None
+
+
+def save_blog_markdown(content: str, keyword: str, directory: str = ".") -> str:
+    """ブログ記事をMarkdownファイルとして保存し、パスを返す。"""
+    safe_kw = re.sub(r"[^0-9A-Za-z_-]+", "_", keyword)[:30]
+    filename = f"{safe_kw}_{int(time.time())}.md"
+    path = os.path.join(directory, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    logging.info("Blog markdown saved: %s", path)
+    return path
 
 
 # =========================
@@ -1013,6 +1025,10 @@ def main():
             if blog_post:
                 print("=== 生成ブログ記事 ===")
                 print(blog_post)
+                path = save_blog_markdown(
+                    blog_post, saved_meta.get("keyword", args.keyword or ""),
+                )
+                print(f"Markdownとして保存: {path}")
             else:
                 logging.info("Skip blog writing (gpt-oss:20b not available)")
         else:
@@ -1259,6 +1275,8 @@ def main():
             if blog_post:
                 print("=== 生成ブログ記事 ===")
                 print(blog_post)
+                path = save_blog_markdown(blog_post, args.keyword)
+                print(f"Markdownとして保存: {path}")
             else:
                 logging.info("Skip blog writing (gpt-oss:20b not available)")
         else:

@@ -1,6 +1,7 @@
 from typing import Dict
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, url_for
 import threading
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper import (
@@ -17,6 +18,7 @@ from scraper import (
     analyze_keywords,
     generate_blog_instruction,
     generate_blog_post,
+    save_blog_markdown,
 )
 
 app = Flask(__name__)
@@ -101,7 +103,12 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
     )
     instructions = generate_blog_instruction(keyword, results, common_subs, title_ranks)
     blog_post = generate_blog_post(keyword, instructions) if instructions else None
-    return results, common_subs, title_ranks, instructions, blog_post
+    blog_file = None
+    if blog_post:
+        static_dir = os.path.join(os.path.dirname(__file__), 'static')
+        path = save_blog_markdown(blog_post, keyword, directory=static_dir)
+        blog_file = os.path.basename(path)
+    return results, common_subs, title_ranks, instructions, blog_post, blog_file
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -119,7 +126,7 @@ def index():
             merge_percent = float(request.form.get('merge_percent', 0.0))
             excl_lines = request.form.get('exclude_patterns', '').splitlines()
             _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
-            results, common_subs, title_ranks, instructions, blog_post = run_analysis(
+            results, common_subs, title_ranks, instructions, blog_post, blog_file = run_analysis(
                 keyword,
                 num_results,
                 delay,
@@ -139,9 +146,10 @@ def index():
                 title_ranks=title_ranks,
                 instructions=instructions,
                 blog_post=blog_post,
+                blog_file=blog_file,
                 form=request.form,
             )
-    return render_template('index.html', results=None, form=None, instructions=None, blog_post=None)
+    return render_template('index.html', results=None, form=None, instructions=None, blog_post=None, blog_file=None)
 
 
 if __name__ == '__main__':
