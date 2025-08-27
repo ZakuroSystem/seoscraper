@@ -725,14 +725,23 @@ def have_ollama_model(name: str) -> bool:
 def ollama_chat(model: str, messages: List[Dict[str, str]], timeout: int = 60) -> Optional[str]:
     """Send a chat request to the Ollama server and return the response text."""
     try:
+        import json
         import requests
 
-        payload = {"model": model, "messages": messages, "stream": False}
-        resp = requests.post(f"{OLLAMA_API_BASE}/api/chat", json=payload, timeout=timeout)
+        payload = {"model": model, "messages": messages}
+        resp = requests.post(
+            f"{OLLAMA_API_BASE}/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(payload),
+            timeout=timeout,
+        )
         data = resp.json()
         if resp.status_code != 200 or "error" in data:
             raise RuntimeError(data.get("error", resp.text))
-        return data.get("message", {}).get("content", "").strip()
+        choices = data.get("choices", [])
+        if not choices:
+            raise RuntimeError("no choices in response")
+        return choices[0].get("message", {}).get("content", "").strip()
     except Exception as e:
         logging.info("Ollama chat failed: %s", e)
         return None
