@@ -745,6 +745,36 @@ def generate_blog_instruction(
         return None
 
 
+def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
+    """ブログ指示書から実際の記事本文を生成する。
+
+    ローカルに Ollama の gpt-oss:20b モデルが存在しない場合は None を返す。
+    """
+    try:
+        import requests
+        prompt = (
+            f"検索キーワード: {keyword}\n"
+            "以下の指示書に従って、日本語でSEOに最適化されたブログ記事を作成してください。\n\n"
+            f"{instructions}\n"
+        )
+        payload = {
+            "model": "gpt-oss:20b",
+            "messages": [
+                {"role": "system", "content": "You are a skilled Japanese blogger."},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+        }
+        resp = requests.post("http://localhost:11434/api/chat", json=payload, timeout=60)
+        data = resp.json()
+        if resp.status_code != 200 or "error" in data:
+            raise RuntimeError(data.get("error", resp.text))
+        return data.get("message", {}).get("content", "").strip()
+    except Exception as e:
+        logging.info("Ollama gpt-oss:20b unavailable: %s", e)
+        return None
+
+
 # =========================
 # 結果・分析ファイルの書き出し／読み込み
 # =========================
@@ -977,6 +1007,14 @@ def main():
         if instructions:
             print("=== ブログ作成指示書 ===")
             print(instructions)
+            blog_post = generate_blog_post(
+                saved_meta.get("keyword", args.keyword or ""), instructions
+            )
+            if blog_post:
+                print("=== 生成ブログ記事 ===")
+                print(blog_post)
+            else:
+                logging.info("Skip blog writing (gpt-oss:20b not available)")
         else:
             logging.info("Skip blog instructions (gpt-oss:20b not available)")
 
@@ -1217,6 +1255,12 @@ def main():
         if instructions:
             print("=== ブログ作成指示書 ===")
             print(instructions)
+            blog_post = generate_blog_post(args.keyword, instructions)
+            if blog_post:
+                print("=== 生成ブログ記事 ===")
+                print(blog_post)
+            else:
+                logging.info("Skip blog writing (gpt-oss:20b not available)")
         else:
             logging.info("Skip blog instructions (gpt-oss:20b not available)")
 

@@ -56,6 +56,10 @@
     <h2>ブログ作成指示書</h2>
     <pre>{{ instructions }}</pre>
     {% endif %}
+    {% if blog_post %}
+    <h2>生成されたブログ記事</h2>
+    <pre>{{ blog_post }}</pre>
+    {% endif %}
     {% endif %}
 
     <form method="post">
