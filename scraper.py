@@ -699,9 +699,24 @@ def rank_common_titles(
     )
 
 
+
 # =========================
 # AIによるブログ指示書生成 (Ollama)
 # =========================
+
+def have_ollama_model(name: str) -> bool:
+    """Return True if the given Ollama model exists locally."""
+    try:
+        import requests
+
+        resp = requests.get("http://localhost:11434/api/tags", timeout=5)
+        data = resp.json()
+        return any(m.get("name") == name for m in data.get("models", []))
+    except Exception as e:  # pragma: no cover - optional runtime feature
+        logging.info("Ollama model check failed: %s", e)
+        return False
+
+
 def generate_blog_instruction(
     keyword: str,
     results: List[Dict],
@@ -714,6 +729,9 @@ def generate_blog_instruction(
     """
     try:
         import requests  # ローカルサーバーへ HTTP 経由でアクセス
+
+        if not have_ollama_model("gpt-oss:20b"):
+            raise RuntimeError("model not found")
         summary_lines = []
         for r in results[:5]:
             kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
@@ -753,6 +771,9 @@ def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
     """
     try:
         import requests
+
+        if not have_ollama_model("gpt-oss:20b"):
+            raise RuntimeError("model not found")
         prompt = (
             f"検索キーワード: {keyword}\n"
             "以下の指示書に従って、日本語でSEOに最適化されたブログ記事をMarkdown形式で作成してください。\n\n"
