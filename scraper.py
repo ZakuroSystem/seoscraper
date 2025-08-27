@@ -327,7 +327,17 @@ def analyze_keywords(text: str, top_n: int = 10, merge_threshold: float = 0.0) -
         tokenizer = Tokenizer()
         local.tokenizer = tokenizer
     counter: Counter = Counter()
-    for t in tokenizer.tokenize(text):
+    # Janome's tokenizer and underlying FST are not thread‑safe, so guard usage
+    # with a global lock. If a KeyError bubbles up from the dictionary cache,
+    # recreate the tokenizer and retry once to avoid crashing the worker.
+    with analyze_keywords._lock:
+        try:
+            tokens = list(tokenizer.tokenize(text))
+        except KeyError:
+            tokenizer = Tokenizer()
+            local.tokenizer = tokenizer
+            tokens = list(tokenizer.tokenize(text))
+    for t in tokens:
         pos = t.part_of_speech.split(',')[0]
         base = t.base_form if t.base_form != '*' else t.surface
         if pos == '名詞' and base not in analyze_keywords._stopwords and len(base) > 1:
@@ -339,6 +349,7 @@ def analyze_keywords(text: str, top_n: int = 10, merge_threshold: float = 0.0) -
     return total, top
 
 analyze_keywords._local = threading.local()
+analyze_keywords._lock = threading.Lock()
 analyze_keywords._stopwords = {
     'する', 'ます', 'ある', 'いる', 'なる', 'こと', 'これ', 'それ', 'さん'
 }
