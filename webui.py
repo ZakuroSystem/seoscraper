@@ -34,9 +34,13 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
     results = []
     texts = []
     titles = []
+    thread_local = threading.local()
 
     def process_url(url: str):
-        session = create_session()
+        session = getattr(thread_local, "session", None)
+        if session is None:
+            session = create_session()
+            thread_local.session = session
         domain = extract_domain(url)
         with robots_lock:
             robots = robots_cache.get(domain)
