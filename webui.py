@@ -19,10 +19,13 @@ from scraper import (
     generate_blog_instruction,
     generate_blog_post,
     save_blog_markdown,
+    save_report_markdown,
     have_ollama_model,
 )
 
 app = Flask(__name__)
+
+last_state = {}
 
 
 def run_analysis(
@@ -37,6 +40,7 @@ def run_analysis(
     remove_trans,
     remove_patterns,
     merge_percent: float,
+    generate_report: bool,
     generate_blog: bool,
 ):
     """検索と解析を実行し結果を返す"""
@@ -132,20 +136,24 @@ def run_analysis(
         remove_patterns=remove_patterns,
         mode=analysis_mode,
     )
-    if have_ollama_model("gpt-oss:20b"):
-        with logs_lock:
-            logs.append("Ollamaで指示書生成をリクエストしています")
-        instructions = generate_blog_instruction(keyword, results, common_subs, title_ranks)
-        if instructions:
+    instructions = None
+    if generate_report:
+        if have_ollama_model("gpt-oss:20b"):
             with logs_lock:
-                logs.append("指示書を生成しました")
+                logs.append("Ollamaで指示書生成をリクエストしています")
+            instructions = generate_blog_instruction(keyword, results, common_subs, title_ranks)
+            if instructions:
+                with logs_lock:
+                    logs.append("指示書を生成しました")
+            else:
+                with logs_lock:
+                    logs.append("指示書生成が空でした")
         else:
             with logs_lock:
-                logs.append("指示書生成が空でした")
+                logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
     else:
-        instructions = None
         with logs_lock:
-            logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
+            logs.append("指示書生成をスキップしました")
     blog_post = None
     blog_file = None
     if generate_blog:
@@ -181,46 +189,134 @@ def run_analysis(
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
+    global last_state
     if request.method == 'POST':
-        keyword = request.form.get('keyword', '')
-        action = request.form.get('action', 'report')
-        if keyword:
-            num_results = int(request.form.get('num_results', 10))
-            delay = float(request.form.get('delay', 0.1))
-            workers = int(request.form.get('workers', 10))
-            analyze_chars = int(request.form.get('analyze_chars', 5000))
-            rank_k = int(request.form.get('rank_k', 15))
-            max_common_ratio = float(request.form.get('max_common_ratio', 0.8))
-            analysis_mode = request.form.get('analysis_mode', 'tiktoken')
-            merge_percent = float(request.form.get('merge_percent', 0.0))
-            excl_lines = request.form.get('exclude_patterns', '').splitlines()
-            _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
-            results, common_subs, title_ranks, instructions, blog_post, blog_file, logs = run_analysis(
-                keyword,
-                num_results,
-                delay,
-                rank_k,
-                analyze_chars,
-                max_common_ratio,
-                analysis_mode,
-                workers,
-                remove_trans,
-                remove_patterns,
-                merge_percent,
-                action == 'blog',
-            )
+        action = request.form.get('action', 'scrape')
+        if action == 'scrape':
+            keyword = request.form.get('keyword', '')
+            if keyword:
+                num_results = int(request.form.get('num_results', 10))
+                delay = float(request.form.get('delay', 0.1))
+                workers = int(request.form.get('workers', 10))
+                analyze_chars = int(request.form.get('analyze_chars', 5000))
+                rank_k = int(request.form.get('rank_k', 15))
+                max_common_ratio = float(request.form.get('max_common_ratio', 0.8))
+                analysis_mode = request.form.get('analysis_mode', 'tiktoken')
+                merge_percent = float(request.form.get('merge_percent', 0.0))
+                excl_lines = request.form.get('exclude_patterns', '').splitlines()
+                _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
+                results, common_subs, title_ranks, _, _, _, logs = run_analysis(
+                    keyword,
+                    num_results,
+                    delay,
+                    rank_k,
+                    analyze_chars,
+                    max_common_ratio,
+                    analysis_mode,
+                    workers,
+                    remove_trans,
+                    remove_patterns,
+                    merge_percent,
+                    generate_report=False,
+                    generate_blog=False,
+                )
+                last_state = {
+                    'keyword': keyword,
+                    'results': results,
+                    'common_subs': common_subs,
+                    'title_ranks': title_ranks,
+                    'logs': logs,
+                    'form': request.form,
+                }
+                return render_template(
+                    'index.html',
+                    results=results,
+                    common_subs=common_subs,
+                    title_ranks=title_ranks,
+                    instructions=None,
+                    report_file=None,
+                    blog_post=None,
+                    blog_file=None,
+                    logs=logs,
+                    form=request.form,
+                )
+        elif action == 'report' and last_state.get('results'):
+            logs = last_state.get('logs', []).copy()
+            keyword = last_state['keyword']
+            if have_ollama_model("gpt-oss:20b"):
+                logs.append("Ollamaで指示書生成をリクエストしています")
+                instructions = generate_blog_instruction(
+                    keyword,
+                    last_state['results'],
+                    last_state['common_subs'],
+                    last_state['title_ranks'],
+                )
+                if instructions:
+                    static_dir = os.path.join(os.path.dirname(__file__), 'static', 'reports')
+                    path = save_report_markdown(instructions, keyword, directory=static_dir)
+                    report_file = os.path.basename(path)
+                    logs.append("レポートを保存しました")
+                else:
+                    report_file = None
+                    logs.append("指示書生成が空でした")
+            else:
+                instructions = None
+                report_file = None
+                logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
+            last_state.update({'instructions': instructions, 'report_file': report_file, 'logs': logs})
             return render_template(
                 'index.html',
-                results=results,
-                common_subs=common_subs,
-                title_ranks=title_ranks,
+                results=last_state['results'],
+                common_subs=last_state['common_subs'],
+                title_ranks=last_state['title_ranks'],
                 instructions=instructions,
+                report_file=report_file,
+                blog_post=None,
+                blog_file=None,
+                logs=logs,
+                form=last_state.get('form'),
+            )
+        elif action == 'blog' and last_state.get('instructions'):
+            logs = last_state.get('logs', []).copy()
+            keyword = last_state['keyword']
+            if have_ollama_model("gpt-oss:20b"):
+                logs.append("Ollamaでブログ生成をリクエストしています")
+                blog_post = generate_blog_post(keyword, last_state['instructions'])
+                if blog_post:
+                    static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+                    path = save_blog_markdown(blog_post, keyword, directory=static_dir)
+                    blog_file = os.path.basename(path)
+                    logs.append("ブログ記事を保存しました")
+                else:
+                    blog_file = None
+                    logs.append("ブログ生成結果が空でした")
+            else:
+                blog_post = None
+                blog_file = None
+                logs.append("gpt-oss:20bが見つからないためブログ生成をスキップしました")
+            last_state.update({'blog_post': blog_post, 'blog_file': blog_file, 'logs': logs})
+            return render_template(
+                'index.html',
+                results=last_state['results'],
+                common_subs=last_state['common_subs'],
+                title_ranks=last_state['title_ranks'],
+                instructions=last_state.get('instructions'),
+                report_file=last_state.get('report_file'),
                 blog_post=blog_post,
                 blog_file=blog_file,
                 logs=logs,
-                form=request.form,
+                form=last_state.get('form'),
             )
-    return render_template('index.html', results=None, form=None, instructions=None, blog_post=None, blog_file=None, logs=None)
+    return render_template(
+        'index.html',
+        results=None,
+        form=None,
+        instructions=None,
+        report_file=None,
+        blog_post=None,
+        blog_file=None,
+        logs=None,
+    )
 
 
 if __name__ == '__main__':

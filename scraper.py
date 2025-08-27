@@ -796,17 +796,26 @@ def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
         logging.info("Ollama gpt-oss:20b unavailable: %s", e)
         return None
 
-
-def save_blog_markdown(content: str, keyword: str, directory: str = ".") -> str:
-    """ブログ記事をMarkdownファイルとして保存し、パスを返す。"""
+def save_markdown(content: str, keyword: str, directory: str = ".") -> str:
+    """Markdownファイルとして保存し、保存先パスを返す。"""
     os.makedirs(directory, exist_ok=True)
     safe_kw = re.sub(r"[^0-9A-Za-z_-]+", "_", keyword)[:30]
     filename = f"{safe_kw}_{int(time.time())}.md"
     path = os.path.join(directory, filename)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-    logging.info("Blog markdown saved: %s", path)
+    logging.info("Markdown saved: %s", path)
     return path
+
+
+def save_blog_markdown(content: str, keyword: str, directory: str = ".") -> str:
+    """ブログ記事をMarkdownファイルとして保存し、パスを返す。"""
+    return save_markdown(content, keyword, directory)
+
+
+def save_report_markdown(content: str, keyword: str, directory: str = ".") -> str:
+    """レポートをMarkdownファイルとして保存し、パスを返す。"""
+    return save_markdown(content, keyword, directory)
 
 
 # =========================
