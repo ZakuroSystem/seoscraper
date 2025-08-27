@@ -699,6 +699,53 @@ def rank_common_titles(
 
 
 # =========================
+# AIによるブログ指示書生成 (Ollama)
+# =========================
+def generate_blog_instruction(
+    keyword: str,
+    results: List[Dict],
+    common_subs: List[Dict],
+    title_ranks: List[Tuple[str, int]],
+) -> Optional[str]:
+    """検索結果の概要から SEO ブログ記事の指示書を生成する。
+
+    ローカルに Ollama の gpt-oss:20b モデルが存在しない場合は None を返す。
+    """
+    try:
+        import requests  # ローカルサーバーへ HTTP 経由でアクセス
+        summary_lines = []
+        for r in results[:5]:
+            kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
+            summary_lines.append(f"- {r.get('title', '')} | キーワード: {kws}")
+        body = "\n".join(summary_lines)
+        subs = "\n".join(f"- {s['text']} ({s['count']}件)" for s in common_subs[:5])
+        titles = "\n".join(f"- {t} ({c}件)" for t, c in title_ranks[:5])
+        prompt = (
+            f"検索キーワード: {keyword}\n"
+            f"上位ページの概要:\n{body}\n\n"
+            f"共通本文フレーズ:\n{subs}\n\n"
+            f"共通SEOタイトルフレーズ:\n{titles}\n\n"
+            "これらを参考にSEO対策されたブログ記事を書くための指示書を日本語で作成してください。"
+        )
+        payload = {
+            "model": "gpt-oss:20b",
+            "messages": [
+                {"role": "system", "content": "You are an expert Japanese SEO consultant."},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+        }
+        resp = requests.post("http://localhost:11434/api/chat", json=payload, timeout=30)
+        data = resp.json()
+        if resp.status_code != 200 or "error" in data:
+            raise RuntimeError(data.get("error", resp.text))
+        return data.get("message", {}).get("content", "").strip()
+    except Exception as e:
+        logging.info("Ollama gpt-oss:20b unavailable: %s", e)
+        return None
+
+
+# =========================
 # 結果・分析ファイルの書き出し／読み込み
 # =========================
 def write_results_csv(path: str, rows: List[Dict]):
@@ -923,6 +970,15 @@ def main():
                 print(f"[{cnt}件] {repr(title)}")
         else:
             print("（該当なし）")
+
+        instructions = generate_blog_instruction(
+            saved_meta.get("keyword", args.keyword or ""), results, common_subs, title_ranks
+        )
+        if instructions:
+            print("=== ブログ作成指示書 ===")
+            print(instructions)
+        else:
+            logging.info("Skip blog instructions (gpt-oss:20b not available)")
 
         logging.info("Finished (analysis-load mode). results=%d", len(results))
         return
@@ -1155,6 +1211,14 @@ def main():
                 print(f"[{cnt}件] {repr(title)}")
         else:
             print("（該当なし）")
+        instructions = generate_blog_instruction(
+            args.keyword, results, common_subs, title_ranks
+        )
+        if instructions:
+            print("=== ブログ作成指示書 ===")
+            print(instructions)
+        else:
+            logging.info("Skip blog instructions (gpt-oss:20b not available)")
 
         logging.info("Finished. results=%d", len(results))
     else:

@@ -15,6 +15,7 @@ from scraper import (
     filter_common_phrases,
     parse_exclude_lines,
     analyze_keywords,
+    generate_blog_instruction,
 )
 
 app = Flask(__name__)
@@ -97,7 +98,8 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
         remove_patterns=remove_patterns,
         mode=analysis_mode,
     )
-    return results, common_subs, title_ranks
+    instructions = generate_blog_instruction(keyword, results, common_subs, title_ranks)
+    return results, common_subs, title_ranks, instructions
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -115,7 +117,7 @@ def index():
             merge_percent = float(request.form.get('merge_percent', 0.0))
             excl_lines = request.form.get('exclude_patterns', '').splitlines()
             _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
-            results, common_subs, title_ranks = run_analysis(
+            results, common_subs, title_ranks, instructions = run_analysis(
                 keyword,
                 num_results,
                 delay,
@@ -133,9 +135,10 @@ def index():
                 results=results,
                 common_subs=common_subs,
                 title_ranks=title_ranks,
+                instructions=instructions,
                 form=request.form,
             )
-    return render_template('index.html', results=None, form=None)
+    return render_template('index.html', results=None, form=None, instructions=None)
 
 
 if __name__ == '__main__':

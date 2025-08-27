@@ -52,6 +52,10 @@
         <li>{{ cnt }} 件: {{ title }}</li>
       {% endfor %}
     </ul>
+    {% if instructions %}
+    <h2>ブログ作成指示書</h2>
+    <pre>{{ instructions }}</pre>
+    {% endif %}
     {% endif %}
 
     <form method="post">
