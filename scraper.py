@@ -8,6 +8,7 @@ import re
 import json
 import csv
 import os
+from functools import lru_cache
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -20,6 +21,8 @@ from googlesearch import search
 import tldextract
 import tiktoken
 from janome.tokenizer import Tokenizer
+
+OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
 
 
 # =========================
@@ -704,17 +707,35 @@ def rank_common_titles(
 # AIによるブログ指示書生成 (Ollama)
 # =========================
 
+
+@lru_cache()
 def have_ollama_model(name: str) -> bool:
     """Return True if the given Ollama model exists locally."""
     try:
         import requests
 
-        resp = requests.get("http://localhost:11434/api/tags", timeout=5)
+        resp = requests.get(f"{OLLAMA_API_BASE}/api/tags", timeout=5)
         data = resp.json()
         return any(m.get("name") == name for m in data.get("models", []))
     except Exception as e:  # pragma: no cover - optional runtime feature
         logging.info("Ollama model check failed: %s", e)
         return False
+
+
+def ollama_chat(model: str, messages: List[Dict[str, str]], timeout: int = 60) -> Optional[str]:
+    """Send a chat request to the Ollama server and return the response text."""
+    try:
+        import requests
+
+        payload = {"model": model, "messages": messages, "stream": False}
+        resp = requests.post(f"{OLLAMA_API_BASE}/api/chat", json=payload, timeout=timeout)
+        data = resp.json()
+        if resp.status_code != 200 or "error" in data:
+            raise RuntimeError(data.get("error", resp.text))
+        return data.get("message", {}).get("content", "").strip()
+    except Exception as e:
+        logging.info("Ollama chat failed: %s", e)
+        return None
 
 
 def generate_blog_instruction(
@@ -723,78 +744,46 @@ def generate_blog_instruction(
     common_subs: List[Dict],
     title_ranks: List[Tuple[str, int]],
 ) -> Optional[str]:
-    """検索結果の概要から SEO ブログ記事の指示書を生成する。
-
-    ローカルに Ollama の gpt-oss:20b モデルが存在しない場合は None を返す。
-    """
-    try:
-        import requests  # ローカルサーバーへ HTTP 経由でアクセス
-
-        if not have_ollama_model("gpt-oss:20b"):
-            raise RuntimeError("model not found")
-        summary_lines = []
-        for r in results[:5]:
-            kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
-            summary_lines.append(f"- {r.get('title', '')} | キーワード: {kws}")
-        body = "\n".join(summary_lines)
-        subs = "\n".join(f"- {s['text']} ({s['count']}件)" for s in common_subs[:5])
-        titles = "\n".join(f"- {t} ({c}件)" for t, c in title_ranks[:5])
-        prompt = (
-            f"検索キーワード: {keyword}\n"
-            f"上位ページの概要:\n{body}\n\n"
-            f"共通本文フレーズ:\n{subs}\n\n"
-            f"共通SEOタイトルフレーズ:\n{titles}\n\n"
-            "これらを参考にSEO対策されたブログ記事を書くための指示書を日本語で作成してください。"
-        )
-        payload = {
-            "model": "gpt-oss:20b",
-            "messages": [
-                {"role": "system", "content": "You are an expert Japanese SEO consultant."},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-        }
-        resp = requests.post("http://localhost:11434/api/chat", json=payload, timeout=30)
-        data = resp.json()
-        if resp.status_code != 200 or "error" in data:
-            raise RuntimeError(data.get("error", resp.text))
-        return data.get("message", {}).get("content", "").strip()
-    except Exception as e:
-        logging.info("Ollama gpt-oss:20b unavailable: %s", e)
+    """検索結果の概要から SEO ブログ記事の指示書を生成する。"""
+    if not have_ollama_model("gpt-oss:20b"):
+        logging.info("Ollama gpt-oss:20b unavailable: model not found")
         return None
+    summary_lines = []
+    for r in results[:5]:
+        kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
+        summary_lines.append(f"- {r.get('title', '')} | キーワード: {kws}")
+    body = "\n".join(summary_lines)
+    subs = "\n".join(f"- {s['text']} ({s['count']}件)" for s in common_subs[:5])
+    titles = "\n".join(f"- {t} ({c}件)" for t, c in title_ranks[:5])
+    prompt = (
+        f"検索キーワード: {keyword}\n"
+        f"上位ページの概要:\n{body}\n\n"
+        f"共通本文フレーズ:\n{subs}\n\n"
+        f"共通SEOタイトルフレーズ:\n{titles}\n\n"
+        "これらを参考にSEO対策されたブログ記事を書くための指示書を日本語で作成してください。"
+    )
+    messages = [
+        {"role": "system", "content": "You are an expert Japanese SEO consultant."},
+        {"role": "user", "content": prompt},
+    ]
+    return ollama_chat("gpt-oss:20b", messages, timeout=30)
 
 
 def generate_blog_post(keyword: str, instructions: str) -> Optional[str]:
-    """ブログ指示書からMarkdown形式の記事本文を生成する。
-
-    ローカルに Ollama の gpt-oss:20b モデルが存在しない場合は None を返す。
-    """
-    try:
-        import requests
-
-        if not have_ollama_model("gpt-oss:20b"):
-            raise RuntimeError("model not found")
-        prompt = (
-            f"検索キーワード: {keyword}\n"
-            "以下の指示書に従って、日本語でSEOに最適化されたブログ記事をMarkdown形式で作成してください。\n\n"
-            f"{instructions}\n"
-        )
-        payload = {
-            "model": "gpt-oss:20b",
-            "messages": [
-                {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-        }
-        resp = requests.post("http://localhost:11434/api/chat", json=payload, timeout=60)
-        data = resp.json()
-        if resp.status_code != 200 or "error" in data:
-            raise RuntimeError(data.get("error", resp.text))
-        return data.get("message", {}).get("content", "").strip()
-    except Exception as e:
-        logging.info("Ollama gpt-oss:20b unavailable: %s", e)
+    """ブログ指示書からMarkdown形式の記事本文を生成する。"""
+    if not have_ollama_model("gpt-oss:20b"):
+        logging.info("Ollama gpt-oss:20b unavailable: model not found")
         return None
+    prompt = (
+        f"検索キーワード: {keyword}\n"
+        "以下の指示書に従って、日本語でSEOに最適化されたブログ記事をMarkdown形式で作成してください。\n\n"
+        f"{instructions}\n"
+    )
+    messages = [
+        {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
+        {"role": "user", "content": prompt},
+    ]
+    return ollama_chat("gpt-oss:20b", messages, timeout=60)
 
 def save_markdown(content: str, keyword: str, directory: str = ".") -> str:
     """Markdownファイルとして保存し、保存先パスを返す。"""
