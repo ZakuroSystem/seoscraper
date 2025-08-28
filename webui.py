@@ -279,7 +279,12 @@ def stream_report():
             'report_file': os.path.basename(path),
             'report_prompt': prompt,
         })
-        yield "data: {\"done\": true}\n\n"
+        done_payload = {
+            "done": True,
+            "html": instructions_html,
+            "file": os.path.basename(path),
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
@@ -345,7 +350,12 @@ def stream_blog():
             'blog_style': style,
             'human_mode': human,
         })
-        yield "data: {\"done\": true}\n\n"
+        done_payload = {
+            "done": True,
+            "html": blog_html,
+            "file": os.path.basename(path),
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 

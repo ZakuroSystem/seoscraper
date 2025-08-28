@@ -141,8 +141,10 @@
       <button type="submit" name="action" value="report">レポート作成</button>
     </form>
     <pre id="report-stream" class="stream-box"></pre>
+    <div id="report-preview" class="markdown-preview"></div>
+    <p id="report-download"></p>
     {% endif %}
-    {% if instructions and not blog_post %}
+    <div id="blog-section" style="display:{% if instructions and not blog_post %}block{% else %}none{% endif %};">
     <form method="post" id="blog-form">
       <div class="form-group" style="margin-bottom:0.5em;">
         <label for="blog_prompt">追加指示</label>
@@ -166,7 +168,9 @@
       <button type="submit" name="action" value="blog">ブログ作成</button>
     </form>
     <pre id="blog-stream" class="stream-box"></pre>
-    {% endif %}
+    <div id="blog-preview" class="markdown-preview"></div>
+    <p id="blog-download"></p>
+    </div>
     <h2>スクレイピング履歴</h2>
     <ul>
       {% for f in scrape_history %}
@@ -193,7 +197,7 @@
     </ul>
   </div>
   <script>
-  function attachStream(formId, url, streamId, extraParamsFn){
+  function attachStream(formId, url, streamId, previewId, downloadId, extraParamsFn){
     const form = document.getElementById(formId);
     if(!form) return;
     form.addEventListener('submit', function(e){
@@ -201,7 +205,11 @@
       const params = new URLSearchParams(new FormData(form));
       if(extraParamsFn){ extraParamsFn(params); }
       const streamEl = document.getElementById(streamId);
+      const previewEl = document.getElementById(previewId);
+      const dlEl = document.getElementById(downloadId);
       streamEl.textContent = '';
+      if(previewEl) previewEl.innerHTML = '';
+      if(dlEl) dlEl.innerHTML = '';
       const src = new EventSource(url + '?' + params.toString());
       src.onmessage = function(ev){
         const data = JSON.parse(ev.data);
@@ -213,8 +221,18 @@
           streamEl.textContent += 'Error: ' + data.error + '\n';
           src.close();
         } else if(data.done){
+          if(previewEl && data.html){
+            previewEl.innerHTML = data.html;
+          }
+          if(dlEl && data.file){
+            const kind = formId === 'report-form' ? 'reports' : 'blogs';
+            dlEl.innerHTML = `<a href="/static/${kind}/${data.file}" download>${kind === 'reports' ? 'レポートダウンロード' : 'Markdownダウンロード'}</a>`;
+          }
+          if(formId === 'report-form'){
+            const blogSec = document.getElementById('blog-section');
+            if(blogSec) blogSec.style.display = 'block';
+          }
           src.close();
-          location.reload();
         }
       };
       src.onerror = function(){
@@ -223,8 +241,8 @@
       };
     });
   }
-  attachStream('report-form','/stream_report','report-stream', p=>{p.set('hi', document.getElementById('report_hi').checked ? '1':'0');});
-  attachStream('blog-form','/stream_blog','blog-stream', p=>{
+  attachStream('report-form','/stream_report','report-stream','report-preview','report-download', p=>{p.set('hi', document.getElementById('report_hi').checked ? '1':'0');});
+  attachStream('blog-form','/stream_blog','blog-stream','blog-preview','blog-download', p=>{
     p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
     p.set('human', document.querySelector('#blog-form input[name="human_mode"]').checked ? '1':'0');
     p.set('style', document.getElementById('blog_style').value);
