@@ -129,16 +129,21 @@
       <button type="submit" name="action" value="scrape">実行</button>
     </form>
     {% if results and not instructions %}
-    <form method="post">
+    <form method="post" id="report-form">
       <div class="form-group" style="margin-bottom:0.5em;">
         <label for="report_prompt">追加指示</label>
         <textarea id="report_prompt" name="report_prompt" rows="3">{{ report_prompt }}</textarea>
       </div>
+      <div class="form-group">
+        <label><input type="checkbox" name="hi_model" id="report_hi"> 高性能AIを使う</label>
+        <span class="warning" id="report_warn" style="display:none;">警告: 最大10分程度かかる場合があります。</span>
+      </div>
       <button type="submit" name="action" value="report">レポート作成</button>
     </form>
+    <pre id="report-stream" class="stream-box"></pre>
     {% endif %}
     {% if instructions and not blog_post %}
-    <form method="post">
+    <form method="post" id="blog-form">
       <div class="form-group" style="margin-bottom:0.5em;">
         <label for="blog_prompt">追加指示</label>
         <textarea id="blog_prompt" name="blog_prompt" rows="3">{{ blog_prompt }}</textarea>
@@ -154,8 +159,13 @@
       <div class="form-group">
         <label><input type="checkbox" name="human_mode" {% if human_mode %}checked{% endif %}> 人間風ブログ記事モード</label>
       </div>
+      <div class="form-group">
+        <label><input type="checkbox" name="hi_model" id="blog_hi"> 高性能AIを使う</label>
+        <span class="warning" id="blog_warn" style="display:none;">警告: 最大10分程度かかる場合があります。</span>
+      </div>
       <button type="submit" name="action" value="blog">ブログ作成</button>
     </form>
+    <pre id="blog-stream" class="stream-box"></pre>
     {% endif %}
     <h2>スクレイピング履歴</h2>
     <ul>
@@ -182,5 +192,38 @@
       {% endfor %}
     </ul>
   </div>
+  <script>
+  function attachStream(formId, url, streamId, extraParamsFn){
+    const form = document.getElementById(formId);
+    if(!form) return;
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      const params = new URLSearchParams(new FormData(form));
+      if(extraParamsFn){ extraParamsFn(params); }
+      const streamEl = document.getElementById(streamId);
+      streamEl.textContent = '';
+      const src = new EventSource(url + '?' + params.toString());
+      src.onmessage = function(ev){
+        const data = JSON.parse(ev.data);
+        if(data.token){
+          streamEl.textContent += data.token;
+        } else if(data.done){
+          src.close();
+          location.reload();
+        }
+      };
+    });
+  }
+  attachStream('report-form','/stream_report','report-stream', p=>{p.set('hi', document.getElementById('report_hi').checked ? '1':'0');});
+  attachStream('blog-form','/stream_blog','blog-stream', p=>{
+    p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
+    p.set('human', document.querySelector('#blog-form input[name="human_mode"]').checked ? '1':'0');
+    p.set('style', document.getElementById('blog_style').value);
+  });
+  function warnToggle(boxId, warnId){
+    const box=document.getElementById(boxId);const warn=document.getElementById(warnId);if(box&&warn){box.addEventListener('change',()=>{warn.style.display=box.checked?'inline':'none';});}}
+  warnToggle('report_hi','report_warn');
+  warnToggle('blog_hi','blog_warn');
+  </script>
 </body>
 </html>

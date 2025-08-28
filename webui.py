@@ -1,9 +1,10 @@
 from typing import Dict
-from flask import Flask, render_template, request, url_for
+from flask import Flask, render_template, request, url_for, Response, stream_with_context
 import threading
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import markdown
+import json
 
 from scraper import (
     create_session,
@@ -19,6 +20,7 @@ from scraper import (
     analyze_keywords,
     generate_blog_instruction,
     generate_blog_post,
+    ollama_chat_stream,
     save_blog_markdown,
     save_report_markdown,
     save_scrape_json,
@@ -63,6 +65,7 @@ def run_analysis(
     blog_prompt: str = "",
     blog_style: str = "",
     human_mode: bool = False,
+    model: str = "gpt-oss:20b",
 ):
     """検索と解析を実行し結果を返す"""
     logs = []
@@ -159,11 +162,13 @@ def run_analysis(
     )
     instructions = None
     if generate_report:
-        if have_ollama_model("gpt-oss:20b"):
+        if have_ollama_model(model):
             with logs_lock:
                 logs.append("Ollamaで指示書生成をリクエストしています")
             instructions, err = generate_blog_instruction(
-                keyword, results, common_subs, title_ranks, report_prompt
+                keyword, results, common_subs, title_ranks, report_prompt,
+                model=model,
+                timeout=690 if model == "gpt-oss:120b" else 160,
             )
             if instructions:
                 with logs_lock:
@@ -173,7 +178,7 @@ def run_analysis(
                     logs.append(f"指示書生成失敗: {err}")
         else:
             with logs_lock:
-                logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
+                logs.append(f"{model}が見つからないため指示書生成をスキップしました")
     else:
         with logs_lock:
             logs.append("指示書生成をスキップしました")
@@ -181,7 +186,7 @@ def run_analysis(
     blog_file = None
     if generate_blog:
         if instructions:
-            if have_ollama_model("gpt-oss:20b"):
+            if have_ollama_model(model):
                 try:
                     with logs_lock:
                         logs.append("Ollamaでブログ生成をリクエストしています")
@@ -191,6 +196,8 @@ def run_analysis(
                         blog_prompt,
                         style=blog_style,
                         human_mode=human_mode,
+                        model=model,
+                        timeout=690 if model == "gpt-oss:120b" else 160,
                     )
                     if blog_post:
                         static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
@@ -206,7 +213,7 @@ def run_analysis(
                         logs.append(f"ブログ生成エラー: {e}")
             else:
                 with logs_lock:
-                    logs.append("gpt-oss:20bが見つからないためブログ生成をスキップしました")
+                    logs.append(f"{model}が見つからないためブログ生成をスキップしました")
         else:
             with logs_lock:
                 logs.append("指示書がないためブログ生成をスキップしました")
@@ -214,6 +221,131 @@ def run_analysis(
         with logs_lock:
             logs.append("ブログ生成をスキップしました")
     return results, common_subs, title_ranks, instructions, blog_post, blog_file, logs
+
+
+@app.route('/stream_report')
+def stream_report():
+    if not last_state.get('results'):
+        def gen_empty():
+            yield "data: {\"error\": \"no results\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    prompt = request.args.get('prompt', '')
+    hi = request.args.get('hi') == '1'
+    model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
+    timeout = 690 if hi else 160
+    if not have_ollama_model(model):
+        def gen_model():
+            yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
+        return Response(gen_model(), mimetype='text/event-stream')
+
+    results = last_state['results']
+    common_subs = last_state['common_subs']
+    title_ranks = last_state['title_ranks']
+    keyword = last_state['keyword']
+    summary_lines = []
+    for r in results[:5]:
+        kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
+        summary_lines.append(f"- {r.get('title', '')} | キーワード: {kws}")
+    body = "\n".join(summary_lines)
+    subs = "\n".join(f"- {s['text']} ({s['count']}件)" for s in common_subs[:5])
+    titles = "\n".join(f"- {t} ({c}件)" for t, c in title_ranks[:5])
+    prompt_txt = (
+        f"検索キーワード: {keyword}\n"
+        f"上位ページの概要:\n{body}\n\n"
+        f"共通本文フレーズ:\n{subs}\n\n"
+        f"共通SEOタイトルフレーズ:\n{titles}\n\n"
+        "これらを参考にSEO対策されたブログ記事を書くための指示書を日本語で作成してください。"
+    )
+    if prompt:
+        prompt_txt += f"\n\n追加指示:\n{prompt}"
+    messages = [
+        {"role": "system", "content": "You are an expert Japanese SEO consultant."},
+        {"role": "user", "content": prompt_txt},
+    ]
+
+    def generate():
+        buf = []
+        for token in ollama_chat_stream(model, messages, timeout=timeout):
+            buf.append(token)
+            yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
+        full = ''.join(buf)
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'reports')
+        path = save_report_markdown(full, keyword, directory=static_dir)
+        instructions_html = markdown.markdown(full, extensions=["extra"])
+        last_state.update({
+            'instructions': full,
+            'instructions_html': instructions_html,
+            'report_file': os.path.basename(path),
+            'report_prompt': prompt,
+        })
+        yield "data: {\"done\": true}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/stream_blog')
+def stream_blog():
+    if not last_state.get('instructions'):
+        def gen_empty():
+            yield "data: {\"error\": \"no instructions\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    prompt = request.args.get('prompt', '')
+    style = request.args.get('style', '')
+    human = request.args.get('human') == '1'
+    hi = request.args.get('hi') == '1'
+    model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
+    timeout = 690 if hi else 160
+    if not have_ollama_model(model):
+        def gen_model():
+            yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
+        return Response(gen_model(), mimetype='text/event-stream')
+
+    keyword = last_state['keyword']
+    instructions = last_state['instructions']
+    prompt_txt = (
+        f"検索キーワード: {keyword}\n"
+        "以下の指示書に従って、日本語でSEOに最適化されたブログ記事をMarkdown形式で作成してください。\n\n"
+        f"{instructions}\n"
+    )
+    if style:
+        prompt_txt += f"\nブログの雰囲気: {style}\n"
+    if human:
+        prompt_txt += (
+            "\nAIで生成されたと気付かれないよう、人間らしい自然な語り口で書いてください。"
+            "以下の点にも留意してください:\n"
+            "- 見出し番号など機械的な構成を避け、節ごとに変化を付ける\n"
+            "- 金額や数値は現実的な揺らぎを含め、過度に整列させない\n"
+            "- 不自然な語句や誤用を避け、文脈に合う語彙を選ぶ\n"
+            "- 汎用的なマーケティング文句を多用せず具体例や根拠を示す\n"
+            "- 表やFAQなどの装飾は必要なものだけに留める\n"
+        )
+    if prompt:
+        prompt_txt += f"\n追加指示:\n{prompt}\n"
+    messages = [
+        {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
+        {"role": "user", "content": prompt_txt},
+    ]
+
+    def generate():
+        buf = []
+        for token in ollama_chat_stream(model, messages, timeout=timeout):
+            buf.append(token)
+            yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
+        full = ''.join(buf)
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+        path = save_blog_markdown(full, keyword, directory=static_dir)
+        blog_html = markdown.markdown(full, extensions=["extra"])
+        last_state.update({
+            'blog_post': full,
+            'blog_html': blog_html,
+            'blog_file': os.path.basename(path),
+            'blog_prompt': prompt,
+            'blog_style': style,
+            'human_mode': human,
+        })
+        yield "data: {\"done\": true}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -248,6 +380,7 @@ def index():
                     merge_percent,
                     generate_report=False,
                     generate_blog=False,
+                    model="gpt-oss:20b",
                 )
                 static_dir = os.path.join(os.path.dirname(__file__), 'static', 'scrapes')
                 save_scrape_json(results, keyword, directory=static_dir)
@@ -295,7 +428,10 @@ def index():
             logs = last_state.get('logs', []).copy()
             keyword = last_state['keyword']
             report_prompt = request.form.get('report_prompt', '')
-            if have_ollama_model("gpt-oss:20b"):
+            hi_model = bool(request.form.get('hi_model'))
+            model = "gpt-oss:120b" if hi_model else "gpt-oss:20b"
+            timeout = 690 if hi_model else 160
+            if have_ollama_model(model):
                 logs.append("Ollamaで指示書生成をリクエストしています")
                 instructions, err = generate_blog_instruction(
                     keyword,
@@ -303,6 +439,8 @@ def index():
                     last_state['common_subs'],
                     last_state['title_ranks'],
                     report_prompt,
+                    model=model,
+                    timeout=timeout,
                 )
                 if instructions:
                     static_dir = os.path.join(os.path.dirname(__file__), 'static', 'reports')
@@ -315,7 +453,7 @@ def index():
             else:
                 instructions = None
                 report_file = None
-                logs.append("gpt-oss:20bが見つからないため指示書生成をスキップしました")
+                logs.append(f"{model}が見つからないため指示書生成をスキップしました")
             instructions_html = (
                 markdown.markdown(instructions, extensions=["extra"])
                 if instructions
@@ -356,7 +494,10 @@ def index():
             blog_prompt = request.form.get('blog_prompt', '')
             blog_style = request.form.get('blog_style', '標準')
             human_mode = bool(request.form.get('human_mode'))
-            if have_ollama_model("gpt-oss:20b"):
+            hi_model = bool(request.form.get('hi_model'))
+            model = "gpt-oss:120b" if hi_model else "gpt-oss:20b"
+            timeout = 690 if hi_model else 160
+            if have_ollama_model(model):
                 logs.append("Ollamaでブログ生成をリクエストしています")
                 blog_post, err = generate_blog_post(
                     keyword,
@@ -364,6 +505,8 @@ def index():
                     blog_prompt,
                     style=blog_style,
                     human_mode=human_mode,
+                    model=model,
+                    timeout=timeout,
                 )
                 if blog_post:
                     static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
@@ -376,7 +519,7 @@ def index():
             else:
                 blog_post = None
                 blog_file = None
-                logs.append("gpt-oss:20bが見つからないためブログ生成をスキップしました")
+                logs.append(f"{model}が見つからないためブログ生成をスキップしました")
             blog_html = (
                 markdown.markdown(blog_post, extensions=["extra"])
                 if blog_post

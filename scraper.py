@@ -737,7 +737,7 @@ def have_ollama_model(name: str) -> bool:
 
 
 def ollama_chat(
-    model: str, messages: List[Dict[str, str]], timeout: int = 120
+    model: str, messages: List[Dict[str, str]], timeout: int = 160
 ) -> Tuple[Optional[str], Optional[str]]:
     """Send a chat request to the Ollama server and return the response text.
 
@@ -787,10 +787,12 @@ def generate_blog_instruction(
     common_subs: List[Dict],
     title_ranks: List[Tuple[str, int]],
     user_prompt: str = "",
+    model: str = "gpt-oss:20b",
+    timeout: int = 160,
 ) -> Tuple[Optional[str], Optional[str]]:
     """検索結果の概要から SEO ブログ記事の指示書を生成する。"""
-    if not have_ollama_model("gpt-oss:20b"):
-        msg = "gpt-oss:20b not available"
+    if not have_ollama_model(model):
+        msg = f"{model} not available"
         logging.info(msg)
         return None, msg
     summary_lines = []
@@ -813,7 +815,7 @@ def generate_blog_instruction(
         {"role": "system", "content": "You are an expert Japanese SEO consultant."},
         {"role": "user", "content": prompt},
     ]
-    return ollama_chat("gpt-oss:20b", messages, timeout=120)
+    return ollama_chat(model, messages, timeout=timeout)
 
 
 def generate_blog_post(
@@ -822,10 +824,12 @@ def generate_blog_post(
     user_prompt: str = "",
     style: str = "",
     human_mode: bool = False,
+    model: str = "gpt-oss:20b",
+    timeout: int = 160,
 ) -> Tuple[Optional[str], Optional[str]]:
     """ブログ指示書からMarkdown形式の記事本文を生成する。"""
-    if not have_ollama_model("gpt-oss:20b"):
-        msg = "gpt-oss:20b not available"
+    if not have_ollama_model(model):
+        msg = f"{model} not available"
         logging.info(msg)
         return None, msg
     prompt = (
@@ -836,14 +840,59 @@ def generate_blog_post(
     if style:
         prompt += f"\nブログの雰囲気: {style}\n"
     if human_mode:
-        prompt += "\nAIで生成されたと気付かれないよう、人間らしい自然な語り口で書いてください。\n"
+        prompt += (
+            "\nAIで生成されたと気付かれないよう、人間らしい自然な語り口で書いてください。"
+            "以下の点にも留意してください:\n"
+            "- 見出し番号など機械的な構成を避け、節ごとに変化を付ける\n"
+            "- 金額や数値は現実的な揺らぎを含め、過度に整列させない\n"
+            "- 不自然な語句や誤用を避け、文脈に合う語彙を選ぶ\n"
+            "- 汎用的なマーケティング文句を多用せず具体例や根拠を示す\n"
+            "- 表やFAQなどの装飾は必要なものだけに留める\n"
+        )
     if user_prompt:
         prompt += f"\n追加指示:\n{user_prompt}\n"
     messages = [
         {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
         {"role": "user", "content": prompt},
     ]
-    return ollama_chat("gpt-oss:20b", messages, timeout=120)
+    return ollama_chat(model, messages, timeout=timeout)
+
+
+def ollama_chat_stream(
+    model: str, messages: List[Dict[str, str]], timeout: int = 160
+):
+    """Yield content chunks from Ollama as they arrive."""
+    import json
+    import requests
+
+    # handshake
+    hello_payload = {"model": model, "messages": [{"role": "user", "content": "Hello"}]}
+    requests.post(
+        f"{OLLAMA_API_BASE}/v1/chat/completions",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(hello_payload),
+        timeout=60,
+    )
+
+    payload = {"model": model, "messages": messages, "stream": True}
+    with requests.post(
+        f"{OLLAMA_API_BASE}/v1/chat/completions",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+        timeout=timeout,
+        stream=True,
+    ) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            if line.startswith(b"data: "):
+                data = json.loads(line[6:])
+                choices = data.get("choices", [])
+                if choices:
+                    delta = choices[0].get("delta", {}).get("content", "")
+                    if delta:
+                        yield delta
 
 def save_markdown(content: str, keyword: str, directory: str = ".") -> str:
     """Markdownファイルとして保存し、保存先パスを返す。"""
