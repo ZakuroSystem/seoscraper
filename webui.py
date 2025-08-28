@@ -264,6 +264,7 @@ def stream_report():
     ]
 
     def generate():
+        yield f"data: {{\"status\": \"指示書生成を開始します\"}}\n\n"
         buf = []
         for token in ollama_chat_stream(model, messages, timeout=timeout):
             buf.append(token)
@@ -327,6 +328,7 @@ def stream_blog():
     ]
 
     def generate():
+        yield f"data: {{\"status\": \"ブログ生成を開始します\"}}\n\n"
         buf = []
         for token in ollama_chat_stream(model, messages, timeout=timeout):
             buf.append(token)

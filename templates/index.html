@@ -207,10 +207,19 @@
         const data = JSON.parse(ev.data);
         if(data.token){
           streamEl.textContent += data.token;
+        } else if(data.status){
+          streamEl.textContent += data.status + '\n';
+        } else if(data.error){
+          streamEl.textContent += 'Error: ' + data.error + '\n';
+          src.close();
         } else if(data.done){
           src.close();
           location.reload();
         }
+      };
+      src.onerror = function(){
+        streamEl.textContent += 'Error: connection failed\n';
+        src.close();
       };
     });
   }
