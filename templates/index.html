@@ -118,7 +118,7 @@
         <div class="form-group">
           <label for="keyword">キーワード</label>
           <div style="display:flex; gap:0.5em;">
-            <textarea id="keyword" name="keyword" rows="3" placeholder="キーワードを改行で複数指定">{{ form.keyword if form else '' }}</textarea>
+            <textarea id="keyword" name="keyword" rows="5" placeholder="キーワードを改行で複数指定" style="flex:1; white-space:pre-wrap;">{{ form.keyword if form else '' }}</textarea>
             <button type="submit" name="action" value="expand">類似キーワード追加</button>
           </div>
         </div>
