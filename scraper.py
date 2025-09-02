@@ -24,7 +24,7 @@ from janome.tokenizer import Tokenizer
 import markdown
 
 DEFAULT_EXTRA_INSTRUCTION = (
-    "CTA（コール・トゥ・アクション）の要素を含めないようにしてください。"
+    "CTA（コール・トゥ・アクション）の要素を含めないようにしてください。\n"
     "見出しをコピーしないで、ユニークな見出しを作ってください。"
 )
 
