@@ -20,6 +20,7 @@ from scraper import (
     analyze_keywords,
     generate_blog_instruction,
     generate_blog_post,
+    generate_similar_keywords,
     ollama_chat_stream,
     save_blog_markdown,
     markdown_to_html,
@@ -395,10 +396,46 @@ def index():
     global last_state
     if request.method == 'POST':
         action = request.form.get('action', 'scrape')
+        if action == 'expand':
+            keyword = request.form.get('keyword', '')
+            logs = []
+            if keyword:
+                extra, err = generate_similar_keywords(keyword)
+                if extra:
+                    keyword = keyword + ' ' + ' '.join(extra)
+                    logs.append('類似キーワードを追加: ' + ', '.join(extra))
+                else:
+                    logs.append(f'類似キーワード生成失敗: {err}')
+            form = request.form.to_dict(flat=True)
+            form['keyword'] = keyword
+            hist = get_histories()
+            return render_template(
+                'index.html',
+                results=None,
+                logs=logs,
+                form=form,
+                instructions=None,
+                instructions_html=None,
+                report_file=None,
+                blog_post=None,
+                blog_html=None,
+                blog_file=None,
+                info_blog_post=None,
+                info_blog_html=None,
+                info_blog_file=None,
+                report_prompt='',
+                blog_prompt='',
+                blog_style='標準',
+                human_mode=False,
+                html_mode=False,
+                scrape_history=hist['scrapes'],
+                report_history=hist['reports'],
+                blog_history=hist['blogs'],
+            )
         if action == 'scrape':
             keyword = request.form.get('keyword', '')
             if keyword:
-                num_results = int(request.form.get('num_results', 10))
+                num_results = min(int(request.form.get('num_results', 10)), 50)
                 delay = float(request.form.get('delay', 0.1))
                 workers = int(request.form.get('workers', 10))
                 analyze_chars = int(request.form.get('analyze_chars', 5000))
@@ -771,5 +808,5 @@ def index():
 
 
 if __name__ == '__main__':
-    app.run(port=5007)
+    app.run(host='0.0.0.0', port=5007)
 

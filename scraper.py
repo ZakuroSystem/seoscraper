@@ -66,6 +66,7 @@ def create_session() -> requests.Session:
 
 def get_search_results(query: str, num_results: int, pause: float) -> List[str]:
     """Return a list of URLs from Google search."""
+    num_results = min(num_results, 50)
     try:
         urls = list(search(query, num_results=num_results, sleep_interval=pause))
         logging.info("Search ok: %s (hits=%d)", query, len(urls))
@@ -894,6 +895,37 @@ def generate_blog_post(
     return ollama_chat(model, messages, timeout=timeout, web_search=web_search)
 
 
+def generate_similar_keywords(
+    keyword: str,
+    count: int = 10,
+    model: str = "gpt-oss:20b",
+    timeout: int = 120,
+) -> Tuple[List[str], Optional[str]]:
+    """Given a keyword, generate related keywords using Ollama.
+
+    Returns a tuple of (keywords, error message). On success, the error
+    is None. If the model is unavailable or the response is empty,
+    returns an empty list and an error string.
+    """
+    if not have_ollama_model(model):
+        msg = f"{model} not available"
+        logging.info(msg)
+        return [], msg
+    prompt = (
+        f"{keyword}に関連する検索キーワードを{count}個、日本語で列挙してください。\n"
+        "余計な説明や番号は不要です。キーワードのみを1行ずつ出力してください。"
+    )
+    messages = [
+        {"role": "system", "content": "You are an SEO assistant. Output keywords only."},
+        {"role": "user", "content": prompt},
+    ]
+    content, err = ollama_chat(model, messages, timeout=timeout)
+    if err or not content:
+        return [], err or "empty response"
+    kws = [line.strip() for line in content.splitlines() if line.strip()]
+    return kws[:count], None
+
+
 def ollama_chat_stream(
     model: str,
     messages: List[Dict[str, str]],
@@ -1082,6 +1114,8 @@ def main():
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
     parser.add_argument('--merge-percent', type=float, default=18.0,
                         help='類似キーワードを統合する最大編集距離(%)')
+    parser.add_argument('--expand-keywords', action='store_true',
+                        help='gpt-oss:20bで類似キーワードを10個追加して検索に含める')
     # ログ
     parser.add_argument('--log-file', default=None, help='ログ出力先ファイル（指定しない場合はコンソールのみ）')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'], help='ログレベル')
@@ -1267,6 +1301,15 @@ def main():
             len(exclude_regex),
         )
 
+    if args.expand_keywords:
+        extra, err = generate_similar_keywords(args.keyword)
+        if extra:
+            args.keyword += " " + " ".join(extra)
+            logging.info("類似キーワードを追加: %s", ", ".join(extra))
+        else:
+            logging.info("類似キーワード生成失敗: %s", err)
+
+    args.num_results = min(args.num_results, 50)
     logging.info('検索開始 keyword="%s" num=%d', args.keyword, args.num_results)
     urls = get_search_results(args.keyword, args.num_results, args.delay)
     session_factory = create_session
