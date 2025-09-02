@@ -61,6 +61,15 @@ button {
   cursor: pointer;
 }
 
+/* Small inline button used next to keyword textarea */
+.expand-btn {
+  display: inline-block;
+  width: auto;
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
 button:hover {
   background-color: #0056b3;
 }
