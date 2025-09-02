@@ -152,7 +152,7 @@
     <div id="report-preview" class="markdown-preview"></div>
     <p id="report-download"></p>
     {% endif %}
-    <div id="blog-section" style="display:{% if instructions and (not blog_post or not info_blog_post) %}block{% else %}none{% endif %};">
+    <div id="blog-section" style="display:{% if instructions %}block{% else %}none{% endif %};">
     <form method="post" id="blog-form">
       <div class="form-group" style="margin-bottom:0.5em;">
         <label for="blog_prompt">追加指示</label>
@@ -240,8 +240,6 @@
           if(formId === 'report-form'){
             const blogSec = document.getElementById('blog-section');
             if(blogSec) blogSec.style.display = 'block';
-          } else if(formId === 'blog-form') {
-            form.style.display = 'none';
           }
           src.close();
         }
