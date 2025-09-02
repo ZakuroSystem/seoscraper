@@ -737,7 +737,10 @@ def have_ollama_model(name: str) -> bool:
 
 
 def ollama_chat(
-    model: str, messages: List[Dict[str, str]], timeout: int = 160
+    model: str,
+    messages: List[Dict[str, str]],
+    timeout: int = 160,
+    web_search: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Send a chat request to the Ollama server and return the response text.
 
@@ -750,7 +753,13 @@ def ollama_chat(
         import requests
 
         # handshake
-        hello_payload = {"model": model, "messages": [{"role": "user", "content": "Hello"}]}
+        web_flag = web_search or os.environ.get("OLLAMA_WEB_SEARCH") == "1"
+        hello_payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        if web_flag:
+            hello_payload["web_search"] = True
         hello_resp = requests.post(
             f"{OLLAMA_API_BASE}/v1/chat/completions",
             headers={"Content-Type": "application/json"},
@@ -762,6 +771,8 @@ def ollama_chat(
             raise RuntimeError(hello_data.get("error", hello_resp.text))
 
         payload = {"model": model, "messages": messages}
+        if web_flag:
+            payload["web_search"] = True
         resp = requests.post(
             f"{OLLAMA_API_BASE}/v1/chat/completions",
             headers={"Content-Type": "application/json"},
@@ -787,8 +798,10 @@ def generate_blog_instruction(
     common_subs: List[Dict],
     title_ranks: List[Tuple[str, int]],
     user_prompt: str = "",
+    info_only: bool = False,
     model: str = "gpt-oss:20b",
     timeout: int = 160,
+    web_search: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     """検索結果の概要から SEO ブログ記事の指示書を生成する。"""
     if not have_ollama_model(model):
@@ -809,13 +822,15 @@ def generate_blog_instruction(
         f"共通SEOタイトルフレーズ:\n{titles}\n\n"
         "これらを参考にSEO対策されたブログ記事を書くための指示書を日本語で作成してください。"
     )
+    if info_only:
+        prompt += "案件や見積りへの誘導は避け、純粋な情報提供に徹してください。"
     if user_prompt:
         prompt += f"\n\n追加指示:\n{user_prompt}"
     messages = [
         {"role": "system", "content": "You are an expert Japanese SEO consultant."},
         {"role": "user", "content": prompt},
     ]
-    return ollama_chat(model, messages, timeout=timeout)
+    return ollama_chat(model, messages, timeout=timeout, web_search=web_search)
 
 
 def generate_blog_post(
@@ -824,8 +839,10 @@ def generate_blog_post(
     user_prompt: str = "",
     style: str = "",
     human_mode: bool = False,
+    info_only: bool = False,
     model: str = "gpt-oss:20b",
     timeout: int = 160,
+    web_search: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     """ブログ指示書からMarkdown形式の記事本文を生成する。"""
     if not have_ollama_model(model):
@@ -851,22 +868,33 @@ def generate_blog_post(
         )
     if user_prompt:
         prompt += f"\n追加指示:\n{user_prompt}\n"
+    if info_only:
+        prompt += "\n案件や見積りへの誘導は行わず、読者への情報提供のみに集中してください。"
     messages = [
         {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
         {"role": "user", "content": prompt},
     ]
-    return ollama_chat(model, messages, timeout=timeout)
+    return ollama_chat(model, messages, timeout=timeout, web_search=web_search)
 
 
 def ollama_chat_stream(
-    model: str, messages: List[Dict[str, str]], timeout: int = 160
+    model: str,
+    messages: List[Dict[str, str]],
+    timeout: int = 160,
+    web_search: bool = False,
 ):
     """Yield content chunks from Ollama as they arrive."""
     import json
     import requests
 
     # handshake
-    hello_payload = {"model": model, "messages": [{"role": "user", "content": "Hello"}]}
+    web_flag = web_search or os.environ.get("OLLAMA_WEB_SEARCH") == "1"
+    hello_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+    if web_flag:
+        hello_payload["web_search"] = True
     requests.post(
         f"{OLLAMA_API_BASE}/v1/chat/completions",
         headers={"Content-Type": "application/json"},
@@ -875,6 +903,8 @@ def ollama_chat_stream(
     )
 
     payload = {"model": model, "messages": messages, "stream": True}
+    if web_flag:
+        payload["web_search"] = True
     with requests.post(
         f"{OLLAMA_API_BASE}/v1/chat/completions",
         headers={"Content-Type": "application/json"},

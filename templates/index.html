@@ -73,6 +73,14 @@
     <p><a href="{{ url_for('static', filename='blogs/' + blog_file) }}" download>Markdownダウンロード</a></p>
     {% endif %}
     {% endif %}
+    {% if info_blog_post %}
+    <h2>情報提供ブログ記事</h2>
+    <div class="markdown-preview">{{ info_blog_html|safe }}</div>
+    <details><summary>Markdownを表示</summary><pre>{{ info_blog_post }}</pre></details>
+    {% if info_blog_file %}
+    <p><a href="{{ url_for('static', filename='blogs/' + info_blog_file) }}" download>Markdownダウンロード</a></p>
+    {% endif %}
+    {% endif %}
     {% if logs %}
     <h2>ログ</h2>
     <pre class="logs">{{ '\n'.join(logs) }}</pre>
@@ -144,7 +152,7 @@
     <div id="report-preview" class="markdown-preview"></div>
     <p id="report-download"></p>
     {% endif %}
-    <div id="blog-section" style="display:{% if instructions and not blog_post %}block{% else %}none{% endif %};">
+    <div id="blog-section" style="display:{% if instructions and (not blog_post or not info_blog_post) %}block{% else %}none{% endif %};">
     <form method="post" id="blog-form">
       <div class="form-group" style="margin-bottom:0.5em;">
         <label for="blog_prompt">追加指示</label>
@@ -166,6 +174,7 @@
         <span class="warning" id="blog_warn" style="display:none;">警告: 最大10分程度かかる場合があります。</span>
       </div>
       <button type="submit" name="action" value="blog">ブログ作成</button>
+      <button type="submit" name="action" value="blog_info">情報提供ブログ作成</button>
     </form>
     <pre id="blog-stream" class="stream-box"></pre>
     <div id="blog-preview" class="markdown-preview"></div>
@@ -202,7 +211,7 @@
     if(!form) return;
     form.addEventListener('submit', function(e){
       e.preventDefault();
-      const params = new URLSearchParams(new FormData(form));
+      const params = new URLSearchParams(new FormData(form, e.submitter));
       if(extraParamsFn){ extraParamsFn(params); }
       const streamEl = document.getElementById(streamId);
       const previewEl = document.getElementById(previewId);
@@ -248,6 +257,10 @@
     p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
     p.set('human', document.querySelector('#blog-form input[name="human_mode"]').checked ? '1':'0');
     p.set('style', document.getElementById('blog_style').value);
+    if (p.get('action') === 'blog_info') {
+      p.set('info','1');
+    }
+    p.delete('action');
   });
   function warnToggle(boxId, warnId){
     const box=document.getElementById(boxId);const warn=document.getElementById(warnId);if(box&&warn){box.addEventListener('change',()=>{warn.style.display=box.checked?'inline':'none';});}}
