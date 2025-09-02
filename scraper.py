@@ -23,6 +23,11 @@ import tiktoken
 from janome.tokenizer import Tokenizer
 import markdown
 
+DEFAULT_EXTRA_INSTRUCTION = (
+    "CTA（コール・トゥ・アクション）の要素を含めないようにしてください。"
+    "見出しをコピーしないで、ユニークな見出しを作ってください。"
+)
+
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
 
 
@@ -838,7 +843,9 @@ def generate_blog_instruction(
     if info_only:
         prompt += "案件や見積りへの誘導は避け、純粋な情報提供に徹してください。"
     if user_prompt:
-        prompt += f"\n\n追加指示:\n{user_prompt}"
+        prompt += f"\n\n追加指示:\n{DEFAULT_EXTRA_INSTRUCTION}\n{user_prompt}"
+    else:
+        prompt += f"\n\n追加指示:\n{DEFAULT_EXTRA_INSTRUCTION}"
     messages = [
         {"role": "system", "content": "You are an expert Japanese SEO consultant."},
         {"role": "user", "content": prompt},
@@ -882,7 +889,9 @@ def generate_blog_post(
             "- 表やFAQなどの装飾は必要なものだけに留める\n"
         )
     if user_prompt:
-        prompt += f"\n追加指示:\n{user_prompt}\n"
+        prompt += f"\n追加指示:\n{DEFAULT_EXTRA_INSTRUCTION}\n{user_prompt}\n"
+    else:
+        prompt += f"\n追加指示:\n{DEFAULT_EXTRA_INSTRUCTION}\n"
     if info_only:
         prompt += "\n案件や見積りへの誘導は行わず、読者への情報提供のみに集中してください。"
     messages = [
@@ -1012,6 +1021,24 @@ def markdown_to_html(md: str) -> str:
         "</style>"
     )
     return f"<!DOCTYPE html><html><head><meta charset='utf-8'>{style}</head><body>{body}</body></html>"
+
+
+def markdown_to_html_ai(md: str, model: str = "gpt-oss:20b", timeout: int = 120) -> Tuple[Optional[str], Optional[str]]:
+    """MarkdownテキストをAIに渡して装飾付きHTMLへ変換する。"""
+    if not have_ollama_model(model):
+        msg = f"{model} not available"
+        logging.info(msg)
+        return None, msg
+    prompt = (
+        "次のMarkdownブログ記事をHTMLに変換してください。"
+        "色や太字などを用いて読みやすい書式にしてください。"
+        f"{DEFAULT_EXTRA_INSTRUCTION}\n\n{md}"
+    )
+    messages = [
+        {"role": "system", "content": "You are an HTML formatter."},
+        {"role": "user", "content": prompt},
+    ]
+    return ollama_chat(model, messages, timeout=timeout)
 
 
 def save_report_markdown(content: str, keyword: str, directory: str = ".") -> str:

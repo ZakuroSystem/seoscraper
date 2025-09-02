@@ -23,10 +23,11 @@ from scraper import (
     generate_similar_keywords,
     ollama_chat_stream,
     save_blog_markdown,
-    markdown_to_html,
+    markdown_to_html_ai,
     save_report_markdown,
     save_scrape_json,
     have_ollama_model,
+    DEFAULT_EXTRA_INSTRUCTION,
 )
 
 app = Flask(__name__)
@@ -310,7 +311,6 @@ def stream_blog():
     human = request.args.get('human') == '1'
     info = request.args.get('info') == '1'
     hi = request.args.get('hi') == '1'
-    html = request.args.get('html') == '1'
     model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
     timeout = 690 if hi else 160
     if not have_ollama_model(model):
@@ -320,7 +320,7 @@ def stream_blog():
 
     keyword = last_state['keyword']
     instructions = last_state['instructions']
-    fmt = "HTML" if html else "Markdown"
+    fmt = "Markdown"
     prompt_txt = (
         f"検索キーワード: {keyword}\n"
         f"以下の指示書に従って、日本語でSEOに最適化されたブログ記事を{fmt}形式で作成してください。\n\n"
@@ -339,7 +339,9 @@ def stream_blog():
             "- 表やFAQなどの装飾は必要なものだけに留める\n"
         )
     if prompt:
-        prompt_txt += f"\n追加指示:\n{prompt}\n"
+        prompt_txt += f"\n追加指示:\n{DEFAULT_EXTRA_INSTRUCTION}\n{prompt}\n"
+    else:
+        prompt_txt += f"\n追加指示:\n{DEFAULT_EXTRA_INSTRUCTION}\n"
     if info:
         prompt_txt += "\n案件や見積りへの誘導は行わず、情報提供のみに集中してください。"
     messages = [
@@ -358,8 +360,8 @@ def stream_blog():
             yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
         full = ''.join(buf)
         static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
-        path = save_blog_markdown(full, keyword, directory=static_dir, html=html)
-        blog_html = full if html else markdown.markdown(full, extensions=["extra"])
+        path = save_blog_markdown(full, keyword, directory=static_dir)
+        blog_html = markdown.markdown(full, extensions=["extra"])
         if info:
             last_state.update({
                 'info_blog_post': full,
@@ -368,7 +370,7 @@ def stream_blog():
                 'blog_prompt': prompt,
                 'blog_style': style,
                 'human_mode': human,
-                'html_mode': html,
+                'info_html_mode': False,
             })
         else:
             last_state.update({
@@ -378,13 +380,13 @@ def stream_blog():
                 'blog_prompt': prompt,
                 'blog_style': style,
                 'human_mode': human,
-                'html_mode': html,
+                'html_mode': False,
             })
         done_payload = {
             "done": True,
             "html": blog_html,
             "file": os.path.basename(path),
-            "html_mode": html,
+            "html_mode": False,
         }
         yield f"data: {json.dumps(done_payload)}\n\n"
 
@@ -423,6 +425,7 @@ def index():
                 info_blog_post=None,
                 info_blog_html=None,
                 info_blog_file=None,
+                info_html_mode=False,
                 report_prompt='',
                 blog_prompt='',
                 blog_style='標準',
@@ -482,6 +485,7 @@ def index():
                     'info_blog_post': None,
                     'info_blog_html': None,
                     'info_blog_file': None,
+                    'info_html_mode': False,
                     'report_prompt': '',
                     'blog_prompt': '',
                     'blog_style': '標準',
@@ -500,14 +504,15 @@ def index():
                     blog_post=None,
                     blog_html=None,
                     blog_file=None,
-                    info_blog_post=None,
-                    info_blog_html=None,
-                    info_blog_file=None,
-                    logs=logs,
-                    form=request.form,
-                    report_prompt='',
-                    blog_prompt='',
-                    blog_style='標準',
+                info_blog_post=None,
+                info_blog_html=None,
+                info_blog_file=None,
+                info_html_mode=False,
+                logs=logs,
+                form=request.form,
+                report_prompt='',
+                blog_prompt='',
+                blog_style='標準',
                     human_mode=False,
                     html_mode=False,
                     scrape_history=hist['scrapes'],
@@ -588,7 +593,6 @@ def index():
             blog_prompt = request.form.get('blog_prompt', '')
             blog_style = request.form.get('blog_style', '標準')
             human_mode = bool(request.form.get('human_mode'))
-            html_mode = bool(request.form.get('html_mode'))
             hi_model = bool(request.form.get('hi_model'))
             model = "gpt-oss:120b" if hi_model else "gpt-oss:20b"
             timeout = 690 if hi_model else 160
@@ -600,13 +604,12 @@ def index():
                     blog_prompt,
                     style=blog_style,
                     human_mode=human_mode,
-                    html_mode=html_mode,
                     model=model,
                     timeout=timeout,
                 )
                 if blog_post:
                     static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
-                    path = save_blog_markdown(blog_post, keyword, directory=static_dir, html=html_mode)
+                    path = save_blog_markdown(blog_post, keyword, directory=static_dir)
                     blog_file = os.path.basename(path)
                     logs.append("ブログ記事を保存しました")
                 else:
@@ -616,9 +619,7 @@ def index():
                 blog_post = None
                 blog_file = None
                 logs.append(f"{model}が見つからないためブログ生成をスキップしました")
-            blog_html = blog_post if (blog_post and html_mode) else (
-                markdown.markdown(blog_post, extensions=["extra"]) if blog_post else None
-            )
+            blog_html = markdown.markdown(blog_post, extensions=["extra"]) if blog_post else None
             last_state.update({
                 'blog_post': blog_post,
                 'blog_html': blog_html,
@@ -627,7 +628,7 @@ def index():
                 'blog_prompt': blog_prompt,
                 'blog_style': blog_style,
                 'human_mode': human_mode,
-                'html_mode': html_mode,
+                'html_mode': False,
             })
             hist = get_histories()
             return render_template(
@@ -644,13 +645,14 @@ def index():
                 info_blog_post=last_state.get('info_blog_post'),
                 info_blog_html=last_state.get('info_blog_html'),
                 info_blog_file=last_state.get('info_blog_file'),
+                info_html_mode=last_state.get('info_html_mode', False),
                 logs=logs,
                 form=last_state.get('form'),
                 report_prompt=last_state.get('report_prompt', ''),
                 blog_prompt=blog_prompt,
                 blog_style=blog_style,
                 human_mode=human_mode,
-                html_mode=html_mode,
+                html_mode=False,
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
@@ -658,12 +660,44 @@ def index():
         elif action == 'convert_html' and last_state.get('blog_post'):
             logs = last_state.get('logs', []).copy()
             keyword = last_state['keyword']
-            html = markdown_to_html(last_state['blog_post'])
-            static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
-            path = save_blog_markdown(html, keyword, directory=static_dir, html=True)
-            blog_file = os.path.basename(path)
-            logs.append("MarkdownをHTMLに変換しました")
-            last_state.update({'blog_html': html, 'blog_file': blog_file, 'html_mode': True, 'logs': logs})
+            html, err = markdown_to_html_ai(last_state['blog_post'])
+            if html:
+                static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+                path = save_blog_markdown(html, keyword, directory=static_dir, html=True)
+                blog_file = os.path.basename(path)
+                logs.append("MarkdownをHTMLに変換しました")
+                last_state.update({'blog_html': html, 'blog_file': blog_file, 'html_mode': True, 'logs': logs})
+            else:
+                blog_file = last_state.get('blog_file')
+                logs.append(f"HTML化失敗: {err}")
+                last_state.update({'logs': logs})
+                hist = get_histories()
+                return render_template(
+                    'index.html',
+                    results=last_state['results'],
+                    common_subs=last_state['common_subs'],
+                    title_ranks=last_state['title_ranks'],
+                    instructions=last_state.get('instructions'),
+                    instructions_html=last_state.get('instructions_html'),
+                    report_file=last_state.get('report_file'),
+                    blog_post=last_state.get('blog_post'),
+                    blog_html=last_state.get('blog_html'),
+                    blog_file=blog_file,
+                    info_blog_post=last_state.get('info_blog_post'),
+                    info_blog_html=last_state.get('info_blog_html'),
+                    info_blog_file=last_state.get('info_blog_file'),
+                    info_html_mode=last_state.get('info_html_mode', False),
+                    logs=logs,
+                    form=last_state.get('form'),
+                    report_prompt=last_state.get('report_prompt', ''),
+                    blog_prompt=last_state.get('blog_prompt', ''),
+                    blog_style=last_state.get('blog_style', '標準'),
+                    human_mode=last_state.get('human_mode', False),
+                    html_mode=last_state.get('html_mode', False),
+                    scrape_history=hist['scrapes'],
+                    report_history=hist['reports'],
+                    blog_history=hist['blogs'],
+                )
             hist = get_histories()
             return render_template(
                 'index.html',
@@ -679,6 +713,7 @@ def index():
                 info_blog_post=last_state.get('info_blog_post'),
                 info_blog_html=last_state.get('info_blog_html'),
                 info_blog_file=last_state.get('info_blog_file'),
+                info_html_mode=last_state.get('info_html_mode', False),
                 logs=logs,
                 form=last_state.get('form'),
                 report_prompt=last_state.get('report_prompt', ''),
@@ -696,7 +731,6 @@ def index():
             blog_prompt = request.form.get('blog_prompt', '')
             blog_style = request.form.get('blog_style', '標準')
             human_mode = bool(request.form.get('human_mode'))
-            html_mode = bool(request.form.get('html_mode'))
             hi_model = bool(request.form.get('hi_model'))
             model = "gpt-oss:120b" if hi_model else "gpt-oss:20b"
             timeout = 690 if hi_model else 160
@@ -721,7 +755,6 @@ def index():
                         blog_prompt,
                         style=blog_style,
                         human_mode=human_mode,
-                        html_mode=html_mode,
                         info_only=True,
                         model=model,
                         timeout=timeout,
@@ -742,9 +775,7 @@ def index():
                 blog_post = None
                 blog_file = None
                 logs.append(f"{model}が見つからないためブログ生成をスキップしました")
-            blog_html = blog_post if (blog_post and html_mode) else (
-                markdown.markdown(blog_post, extensions=["extra"]) if blog_post else None
-            )
+            blog_html = markdown.markdown(blog_post, extensions=["extra"]) if blog_post else None
             last_state.update({
                 'info_blog_post': blog_post,
                 'info_blog_html': blog_html,
@@ -753,7 +784,7 @@ def index():
                 'blog_prompt': blog_prompt,
                 'blog_style': blog_style,
                 'human_mode': human_mode,
-                'html_mode': html_mode,
+                'info_html_mode': False,
             })
             hist = get_histories()
             return render_template(
@@ -770,13 +801,14 @@ def index():
                 info_blog_post=blog_post,
                 info_blog_html=blog_html,
                 info_blog_file=blog_file,
+                info_html_mode=last_state.get('info_html_mode', False),
                 logs=logs,
                 form=last_state.get('form'),
                 report_prompt=last_state.get('report_prompt', ''),
                 blog_prompt=blog_prompt,
                 blog_style=blog_style,
                 human_mode=human_mode,
-                html_mode=html_mode,
+                html_mode=last_state.get('html_mode', False),
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
@@ -795,6 +827,7 @@ def index():
         info_blog_post=None,
         info_blog_html=None,
         info_blog_file=None,
+        info_html_mode=False,
         logs=None,
         report_prompt='',
         blog_prompt='',

@@ -88,13 +88,13 @@
     {% endif %}
     <form method="post">
       <input type="hidden" name="action" value="convert_html">
-      <button type="submit">MarkdownをHTMLに変換</button>
+      <button type="submit">HTML化</button>
     </form>
     {% endif %}
     {% endif %}
     {% if info_blog_post %}
     <h2>情報提供ブログ記事</h2>
-    {% if html_mode %}
+    {% if info_html_mode %}
     <div class="html-preview"><iframe class="html-frame" srcdoc="{{ info_blog_html|replace('"','&quot;')|safe }}"></iframe></div>
     {% if info_blog_file %}
     <p><a href="{{ url_for('static', filename='blogs/' + info_blog_file) }}" download>HTMLダウンロード</a></p>
@@ -204,9 +204,6 @@
         <label><input type="checkbox" name="human_mode" {% if human_mode %}checked{% endif %}> 人間風ブログ記事モード</label>
       </div>
       <div class="form-group">
-        <label><input type="checkbox" name="html_mode" {% if html_mode %}checked{% endif %}> HTMLモード</label>
-      </div>
-      <div class="form-group">
         <label><input type="checkbox" name="hi_model" id="blog_hi"> 高性能AIを使う</label>
         <span class="warning" id="blog_warn" style="display:none;">警告: 最大10分程度かかる場合があります。</span>
       </div>
@@ -303,7 +300,6 @@
     p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
     p.set('human', document.querySelector('#blog-form input[name="human_mode"]').checked ? '1':'0');
     p.set('style', document.getElementById('blog_style').value);
-    p.set('html', document.querySelector('#blog-form input[name="html_mode"]').checked ? '1':'0');
     if (p.get('action') === 'blog_info') {
       p.set('info','1');
     }
