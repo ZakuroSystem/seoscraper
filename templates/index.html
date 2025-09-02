@@ -231,6 +231,8 @@
           if(formId === 'report-form'){
             const blogSec = document.getElementById('blog-section');
             if(blogSec) blogSec.style.display = 'block';
+          } else if(formId === 'blog-form') {
+            form.style.display = 'none';
           }
           src.close();
         }
