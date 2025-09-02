@@ -840,18 +840,20 @@ def generate_blog_post(
     style: str = "",
     human_mode: bool = False,
     info_only: bool = False,
+    html_mode: bool = False,
     model: str = "gpt-oss:20b",
     timeout: int = 160,
     web_search: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """ブログ指示書からMarkdown形式の記事本文を生成する。"""
+    """ブログ指示書から記事本文を生成する。"""
     if not have_ollama_model(model):
         msg = f"{model} not available"
         logging.info(msg)
         return None, msg
+    fmt = "HTML" if html_mode else "Markdown"
     prompt = (
         f"検索キーワード: {keyword}\n"
-        "以下の指示書に従って、日本語でSEOに最適化されたブログ記事をMarkdown形式で作成してください。\n\n"
+        f"以下の指示書に従って、日本語でSEOに最適化されたブログ記事を{fmt}形式で作成してください。\n\n"
         f"{instructions}\n"
     )
     if style:
@@ -871,7 +873,10 @@ def generate_blog_post(
     if info_only:
         prompt += "\n案件や見積りへの誘導は行わず、読者への情報提供のみに集中してください。"
     messages = [
-        {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
+        {
+            "role": "system",
+            "content": f"You are a skilled Japanese blogger. Output {fmt}.",
+        },
         {"role": "user", "content": prompt},
     ]
     return ollama_chat(model, messages, timeout=timeout, web_search=web_search)
@@ -931,26 +936,27 @@ def ollama_chat_stream(
                     if delta:
                         yield delta
 
-def save_markdown(content: str, keyword: str, directory: str = ".") -> str:
-    """Markdownファイルとして保存し、保存先パスを返す。"""
+def save_markdown(content: str, keyword: str, directory: str = ".", ext: str = "md") -> str:
+    """テキストファイルを保存し、保存先パスを返す。"""
     os.makedirs(directory, exist_ok=True)
     safe_kw = re.sub(r"[^0-9A-Za-z_-]+", "_", keyword)[:30]
-    filename = f"{safe_kw}_{int(time.time())}.md"
+    filename = f"{safe_kw}_{int(time.time())}.{ext}"
     path = os.path.join(directory, filename)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-    logging.info("Markdown saved: %s", path)
+    logging.info("file saved: %s", path)
     return path
 
 
-def save_blog_markdown(content: str, keyword: str, directory: str = ".") -> str:
-    """ブログ記事をMarkdownファイルとして保存し、パスを返す。"""
-    return save_markdown(content, keyword, directory)
+def save_blog_markdown(content: str, keyword: str, directory: str = ".", html: bool = False) -> str:
+    """ブログ記事をファイルとして保存し、パスを返す。"""
+    ext = "html" if html else "md"
+    return save_markdown(content, keyword, directory, ext=ext)
 
 
 def save_report_markdown(content: str, keyword: str, directory: str = ".") -> str:
     """レポートをMarkdownファイルとして保存し、パスを返す。"""
-    return save_markdown(content, keyword, directory)
+    return save_markdown(content, keyword, directory, ext="md")
 
 
 def save_scrape_json(results: List[Dict], keyword: str, directory: str = ".") -> str:
@@ -1043,7 +1049,7 @@ def main():
     parser.add_argument('--delay', type=float, default=0.0, help='各リクエスト前の待機秒数')
     parser.add_argument('--workers', type=int, default=10, help='同時リクエスト数')
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
-    parser.add_argument('--merge-percent', type=float, default=0.0,
+    parser.add_argument('--merge-percent', type=float, default=18.0,
                         help='類似キーワードを統合する最大編集距離(%)')
     # ログ
     parser.add_argument('--log-file', default=None, help='ログ出力先ファイル（指定しない場合はコンソールのみ）')

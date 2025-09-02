@@ -67,18 +67,32 @@
     {% endif %}
     {% if blog_post %}
     <h2>生成されたブログ記事</h2>
+    {% if html_mode %}
+    <div class="html-preview"><iframe class="html-frame" srcdoc="{{ blog_html|replace('"','&quot;')|safe }}"></iframe></div>
+    {% if blog_file %}
+    <p><a href="{{ url_for('static', filename='blogs/' + blog_file) }}" download>HTMLダウンロード</a></p>
+    {% endif %}
+    {% else %}
     <div class="markdown-preview">{{ blog_html|safe }}</div>
     <details><summary>Markdownを表示</summary><pre>{{ blog_post }}</pre></details>
     {% if blog_file %}
     <p><a href="{{ url_for('static', filename='blogs/' + blog_file) }}" download>Markdownダウンロード</a></p>
     {% endif %}
     {% endif %}
+    {% endif %}
     {% if info_blog_post %}
     <h2>情報提供ブログ記事</h2>
+    {% if html_mode %}
+    <div class="html-preview"><iframe class="html-frame" srcdoc="{{ info_blog_html|replace('"','&quot;')|safe }}"></iframe></div>
+    {% if info_blog_file %}
+    <p><a href="{{ url_for('static', filename='blogs/' + info_blog_file) }}" download>HTMLダウンロード</a></p>
+    {% endif %}
+    {% else %}
     <div class="markdown-preview">{{ info_blog_html|safe }}</div>
     <details><summary>Markdownを表示</summary><pre>{{ info_blog_post }}</pre></details>
     {% if info_blog_file %}
     <p><a href="{{ url_for('static', filename='blogs/' + info_blog_file) }}" download>Markdownダウンロード</a></p>
+    {% endif %}
     {% endif %}
     {% endif %}
     {% if logs %}
@@ -115,7 +129,7 @@
         </div>
         <div class="form-group">
           <label for="merge_percent">類似キーワード統合 (%)</label>
-          <input type="number" step="0.1" id="merge_percent" name="merge_percent" value="{{ form.merge_percent if form else 0 }}">
+          <input type="number" step="0.1" id="merge_percent" name="merge_percent" value="{{ form.merge_percent if form else 18 }}">
         </div>
         <div class="form-group">
           <label for="max_common_ratio">共通サブ文字列の最大出現率</label>
@@ -140,6 +154,7 @@
     <form method="post" id="report-form">
       <div class="form-group" style="margin-bottom:0.5em;">
         <label for="report_prompt">追加指示</label>
+        <small class="help">まとめたい内容や検索ワードを選んだ理由を書くと精度が上がります。</small>
         <textarea id="report_prompt" name="report_prompt" rows="3">{{ report_prompt }}</textarea>
       </div>
       <div class="form-group">
@@ -156,6 +171,7 @@
     <form method="post" id="blog-form">
       <div class="form-group" style="margin-bottom:0.5em;">
         <label for="blog_prompt">追加指示</label>
+        <small class="help">まとめたい内容や検索ワードを選んだ理由を書くと精度が上がります。</small>
         <textarea id="blog_prompt" name="blog_prompt" rows="3">{{ blog_prompt }}</textarea>
       </div>
       <div class="form-group">
@@ -170,6 +186,9 @@
         <label><input type="checkbox" name="human_mode" {% if human_mode %}checked{% endif %}> 人間風ブログ記事モード</label>
       </div>
       <div class="form-group">
+        <label><input type="checkbox" name="html_mode" {% if html_mode %}checked{% endif %}> HTMLモード</label>
+      </div>
+      <div class="form-group">
         <label><input type="checkbox" name="hi_model" id="blog_hi"> 高性能AIを使う</label>
         <span class="warning" id="blog_warn" style="display:none;">警告: 最大10分程度かかる場合があります。</span>
       </div>
@@ -177,7 +196,7 @@
       <button type="submit" name="action" value="blog_info">情報提供ブログ作成</button>
     </form>
     <pre id="blog-stream" class="stream-box"></pre>
-    <div id="blog-preview" class="markdown-preview"></div>
+    <div id="blog-preview"></div>
     <p id="blog-download"></p>
     </div>
     <h2>スクレイピング履歴</h2>
@@ -217,7 +236,7 @@
       const previewEl = document.getElementById(previewId);
       const dlEl = document.getElementById(downloadId);
       streamEl.textContent = '';
-      if(previewEl) previewEl.innerHTML = '';
+      if(previewEl){ previewEl.innerHTML = ''; previewEl.className = ''; }
       if(dlEl) dlEl.innerHTML = '';
       const src = new EventSource(url + '?' + params.toString());
       src.onmessage = function(ev){
@@ -231,11 +250,22 @@
           src.close();
         } else if(data.done){
           if(previewEl && data.html){
-            previewEl.innerHTML = data.html;
+            if(data.html_mode){
+              previewEl.className = 'html-preview';
+              previewEl.innerHTML = '';
+              const iframe = document.createElement('iframe');
+              iframe.className = 'html-frame';
+              iframe.srcdoc = data.html;
+              previewEl.appendChild(iframe);
+            } else {
+              previewEl.className = 'markdown-preview';
+              previewEl.innerHTML = data.html;
+            }
           }
           if(dlEl && data.file){
             const kind = formId === 'report-form' ? 'reports' : 'blogs';
-            dlEl.innerHTML = `<a href="/static/${kind}/${data.file}" download>${kind === 'reports' ? 'レポートダウンロード' : 'Markdownダウンロード'}</a>`;
+            const label = formId === 'report-form' ? 'レポートダウンロード' : (data.html_mode ? 'HTMLダウンロード' : 'Markdownダウンロード');
+            dlEl.innerHTML = `<a href="/static/${kind}/${data.file}" download>${label}</a>`;
           }
           if(formId === 'report-form'){
             const blogSec = document.getElementById('blog-section');
@@ -255,6 +285,7 @@
     p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
     p.set('human', document.querySelector('#blog-form input[name="human_mode"]').checked ? '1':'0');
     p.set('style', document.getElementById('blog_style').value);
+    p.set('html', document.querySelector('#blog-form input[name="html_mode"]').checked ? '1':'0');
     if (p.get('action') === 'blog_info') {
       p.set('info','1');
     }
