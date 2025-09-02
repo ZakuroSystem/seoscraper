@@ -887,7 +887,14 @@ def ollama_chat_stream(
             if not line:
                 continue
             if line.startswith(b"data: "):
-                data = json.loads(line[6:])
+                payload = line[6:]
+                if payload.strip() == b"[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    logging.info("Bad stream line: %r", line)
+                    continue
                 choices = data.get("choices", [])
                 if choices:
                     delta = choices[0].get("delta", {}).get("content", "")
