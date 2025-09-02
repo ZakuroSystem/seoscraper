@@ -74,12 +74,15 @@ def run_analysis(
     """検索と解析を実行し結果を返す"""
     logs = []
     logs_lock = threading.Lock()
-
-    with logs_lock:
-        logs.append(f"Google検索に問い合わせ中: {keyword}")
-    urls = get_search_results(keyword, num_results, delay)
-    with logs_lock:
-        logs.append(f"検索結果を{len(urls)}件取得しました")
+    urls = []
+    keywords = [k.strip() for k in keyword.splitlines() if k.strip()]
+    for kw in keywords:
+        with logs_lock:
+            logs.append(f"Google検索に問い合わせ中: {kw}")
+        res = get_search_results(kw, num_results, delay)
+        with logs_lock:
+            logs.append(f"検索結果を{len(res)}件取得しました: {kw}")
+        urls.extend(res)
     robots_cache: Dict[str, bool] = {}
     robots_lock = threading.Lock()
     results = []
@@ -404,7 +407,9 @@ def index():
             if keyword:
                 extra, err = generate_similar_keywords(keyword)
                 if extra:
-                    keyword = keyword + ' ' + ' '.join(extra)
+                    if not keyword.endswith('\n'):
+                        keyword += '\n'
+                    keyword += '\n'.join(extra)
                     logs.append('類似キーワードを追加: ' + ', '.join(extra))
                 else:
                     logs.append(f'類似キーワード生成失敗: {err}')

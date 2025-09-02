@@ -70,15 +70,18 @@ def create_session() -> requests.Session:
 
 
 def get_search_results(query: str, num_results: int, pause: float) -> List[str]:
-    """Return a list of URLs from Google search."""
+    """Return a list of URLs from Google search for each line in ``query``."""
     num_results = min(num_results, 50)
-    try:
-        urls = list(search(query, num_results=num_results, sleep_interval=pause))
-        logging.info("Search ok: %s (hits=%d)", query, len(urls))
-        return urls
-    except Exception as e:
-        logging.error("Search failed: %s", e)
-        return []
+    urls: List[str] = []
+    keywords = [q.strip() for q in query.splitlines() if q.strip()]
+    for q in keywords:
+        try:
+            res = list(search(q, num_results=num_results, sleep_interval=pause))
+            logging.info("Search ok: %s (hits=%d)", q, len(res))
+            urls.extend(res)
+        except Exception as e:
+            logging.error("Search failed (%s): %s", q, e)
+    return urls
 
 
 # =========================
@@ -1331,7 +1334,9 @@ def main():
     if args.expand_keywords:
         extra, err = generate_similar_keywords(args.keyword)
         if extra:
-            args.keyword += " " + " ".join(extra)
+            if args.keyword and not args.keyword.endswith("\n"):
+                args.keyword += "\n"
+            args.keyword += "\n".join(extra)
             logging.info("類似キーワードを追加: %s", ", ".join(extra))
         else:
             logging.info("類似キーワード生成失敗: %s", err)
