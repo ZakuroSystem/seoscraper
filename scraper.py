@@ -21,6 +21,7 @@ from googlesearch import search
 import tldextract
 import tiktoken
 from janome.tokenizer import Tokenizer
+import markdown
 
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
 
@@ -963,6 +964,22 @@ def save_blog_markdown(content: str, keyword: str, directory: str = ".", html: b
     """ブログ記事をファイルとして保存し、パスを返す。"""
     ext = "html" if html else "md"
     return save_markdown(content, keyword, directory, ext=ext)
+
+
+def markdown_to_html(md: str) -> str:
+    """Markdownテキストをスタイル付きHTMLに変換する。"""
+    body = markdown.markdown(md, extensions=["extra"])
+    style = (
+        "<style>"
+        "body{font-family:'Helvetica Neue',sans-serif;line-height:1.8;margin:20px;color:#333;}"
+        "h1,h2,h3{color:#2c3e50;}"
+        "a{color:#1e88e5;}"
+        "table{border-collapse:collapse;}"
+        "table,th,td{border:1px solid #ccc;padding:8px;}"
+        "code{background:#f5f5f5;padding:2px 4px;border-radius:4px;}"
+        "</style>"
+    )
+    return f"<!DOCTYPE html><html><head><meta charset='utf-8'>{style}</head><body>{body}</body></html>"
 
 
 def save_report_markdown(content: str, keyword: str, directory: str = ".") -> str:

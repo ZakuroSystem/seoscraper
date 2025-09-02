@@ -22,6 +22,7 @@ from scraper import (
     generate_blog_post,
     ollama_chat_stream,
     save_blog_markdown,
+    markdown_to_html,
     save_report_markdown,
     save_scrape_json,
     have_ollama_model,
@@ -613,6 +614,41 @@ def index():
                 blog_style=blog_style,
                 human_mode=human_mode,
                 html_mode=html_mode,
+                scrape_history=hist['scrapes'],
+                report_history=hist['reports'],
+                blog_history=hist['blogs'],
+            )
+        elif action == 'convert_html' and last_state.get('blog_post'):
+            logs = last_state.get('logs', []).copy()
+            keyword = last_state['keyword']
+            html = markdown_to_html(last_state['blog_post'])
+            static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+            path = save_blog_markdown(html, keyword, directory=static_dir, html=True)
+            blog_file = os.path.basename(path)
+            logs.append("MarkdownをHTMLに変換しました")
+            last_state.update({'blog_html': html, 'blog_file': blog_file, 'html_mode': True, 'logs': logs})
+            hist = get_histories()
+            return render_template(
+                'index.html',
+                results=last_state['results'],
+                common_subs=last_state['common_subs'],
+                title_ranks=last_state['title_ranks'],
+                instructions=last_state.get('instructions'),
+                instructions_html=last_state.get('instructions_html'),
+                report_file=last_state.get('report_file'),
+                blog_post=last_state.get('blog_post'),
+                blog_html=html,
+                blog_file=blog_file,
+                info_blog_post=last_state.get('info_blog_post'),
+                info_blog_html=last_state.get('info_blog_html'),
+                info_blog_file=last_state.get('info_blog_file'),
+                logs=logs,
+                form=last_state.get('form'),
+                report_prompt=last_state.get('report_prompt', ''),
+                blog_prompt=last_state.get('blog_prompt', ''),
+                blog_style=last_state.get('blog_style', '標準'),
+                human_mode=last_state.get('human_mode', False),
+                html_mode=True,
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
