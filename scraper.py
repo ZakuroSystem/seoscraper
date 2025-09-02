@@ -1145,7 +1145,7 @@ def main():
     parser.add_argument('--merge-percent', type=float, default=18.0,
                         help='類似キーワードを統合する最大編集距離(%)')
     parser.add_argument('--expand-keywords', action='store_true',
-                        help='gpt-oss:20bで類似キーワードを10個追加して検索に含める')
+                        help='gpt-oss:20bで各キーワードに類似語を10件ずつ追加して検索に含める')
     # ログ
     parser.add_argument('--log-file', default=None, help='ログ出力先ファイル（指定しない場合はコンソールのみ）')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'], help='ログレベル')
@@ -1332,14 +1332,19 @@ def main():
         )
 
     if args.expand_keywords:
-        extra, err = generate_similar_keywords(args.keyword)
-        if extra:
+        lines = [q.strip() for q in args.keyword.splitlines() if q.strip()]
+        added: List[str] = []
+        for q in lines:
+            extra, err = generate_similar_keywords(q)
+            if extra:
+                added.extend(extra)
+                logging.info("類似キーワードを追加 (%s): %s", q, ", ".join(extra))
+            else:
+                logging.info("類似キーワード生成失敗 (%s): %s", q, err)
+        if added:
             if args.keyword and not args.keyword.endswith("\n"):
                 args.keyword += "\n"
-            args.keyword += "\n".join(extra)
-            logging.info("類似キーワードを追加: %s", ", ".join(extra))
-        else:
-            logging.info("類似キーワード生成失敗: %s", err)
+            args.keyword += "\n".join(added)
 
     args.num_results = min(args.num_results, 50)
     logging.info('検索開始 keyword="%s" num=%d', args.keyword, args.num_results)

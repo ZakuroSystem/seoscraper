@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 from flask import Flask, render_template, request, url_for, Response, stream_with_context
 import threading
 import os
@@ -404,15 +404,18 @@ def index():
         if action == 'expand':
             keyword = request.form.get('keyword', '')
             logs = []
-            if keyword:
-                extra, err = generate_similar_keywords(keyword)
+            added_all: List[str] = []
+            for line in [k.strip() for k in keyword.splitlines() if k.strip()]:
+                extra, err = generate_similar_keywords(line)
                 if extra:
-                    if not keyword.endswith('\n'):
-                        keyword += '\n'
-                    keyword += '\n'.join(extra)
+                    added_all.extend(extra)
                     logs.append('類似キーワードを追加: ' + ', '.join(extra))
                 else:
-                    logs.append(f'類似キーワード生成失敗: {err}')
+                    logs.append(f'類似キーワード生成失敗 ({line}): {err}')
+            if added_all:
+                if keyword and not keyword.endswith('\n'):
+                    keyword += '\n'
+                keyword += '\n'.join(added_all)
             form = request.form.to_dict(flat=True)
             form['keyword'] = keyword
             hist = get_histories()
