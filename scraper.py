@@ -189,6 +189,12 @@ def parse_html(html: str) -> dict:
     text = ' '.join(p.get_text(separator=' ', strip=True) for p in soup.find_all('p'))
     published_time = None
     seo_title = None
+    headings = []
+    for level in range(1, 7):
+        for h in soup.find_all(f'h{level}'):
+            content = h.get_text(strip=True)
+            if content:
+                headings.append(content)
 
     time_selectors = [
         ('meta', {'property': 'article:published_time'}),
@@ -253,6 +259,7 @@ def parse_html(html: str) -> dict:
         'description': description,
         'images': image_count,
         'links': link_count,
+        'headings': headings,
     }
 
 
@@ -811,16 +818,20 @@ def generate_blog_instruction(
     summary_lines = []
     for r in results[:5]:
         kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
-        summary_lines.append(f"- {r.get('title', '')} | キーワード: {kws}")
+        heads = "/".join(r.get("headings", [])[:3])
+        summary_lines.append(f"- {r.get('title', '')} | 見出し: {heads} | キーワード: {kws}")
     body = "\n".join(summary_lines)
     subs = "\n".join(f"- {s['text']} ({s['count']}件)" for s in common_subs[:5])
     titles = "\n".join(f"- {t} ({c}件)" for t, c in title_ranks[:5])
     prompt = (
         f"検索キーワード: {keyword}\n"
         f"上位ページの概要:\n{body}\n\n"
-        f"共通本文フレーズ:\n{subs}\n\n"
+    )
+    if subs:
+        prompt += f"共通本文フレーズ:\n{subs}\n\n"
+    prompt += (
         f"共通SEOタイトルフレーズ:\n{titles}\n\n"
-        "これらを参考にSEO対策されたブログ記事を書くための指示書を日本語で作成してください。"
+        "これらを参考に、どのようなブログ記事を書けばよいかを日本語でまとめた指示書を作成してください。"
     )
     if info_only:
         prompt += "案件や見積りへの誘導は避け、純粋な情報提供に徹してください。"
@@ -986,6 +997,7 @@ def write_results_csv(path: str, rows: List[Dict]):
         "top_keywords",
         "images",
         "links",
+        "headings",
         "text",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -995,6 +1007,8 @@ def write_results_csv(path: str, rows: List[Dict]):
             r_copy = r.copy()
             if isinstance(r_copy.get("top_keywords"), list):
                 r_copy["top_keywords"] = ";".join(f"{k['keyword']}:{k['count']}" for k in r_copy['top_keywords'])
+            if isinstance(r_copy.get("headings"), list):
+                r_copy["headings"] = ";".join(r_copy["headings"])
             writer.writerow(r_copy)
     logging.info("Results CSV written: %s", path)
 
@@ -1281,6 +1295,7 @@ def main():
             'robots': robots,
             'images': data['images'],
             'links': data['links'],
+            'headings': data['headings'],
         }
         logging.info('OK %s | title="%s" robots=%s', target_url, data['title'], robots)
         return row, data['text'], data['title']

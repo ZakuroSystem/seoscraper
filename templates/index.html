@@ -14,7 +14,7 @@
       <h2>検索結果</h2>
       <div class="table-wrapper">
       <table>
-      <tr><th>URL</th><th>ドメイン</th><th>公開日</th><th>SEOタイトル</th><th>説明</th><th>robots.txt</th><th>語数</th><th>上位キーワード</th><th>画像数</th><th>リンク数</th><th>本文</th></tr>
+      <tr><th>URL</th><th>ドメイン</th><th>公開日</th><th>SEOタイトル</th><th>説明</th><th>robots.txt</th><th>語数</th><th>上位キーワード</th><th>画像数</th><th>リンク数</th><th>見出し</th><th>本文</th></tr>
       {% for r in results %}
       <tr>
         <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
@@ -34,6 +34,12 @@
         <td>{{ r.links }}</td>
         <td>
           <details>
+            <summary>{% if r.headings %}{{ r.headings[0][:50] }}{% if r.headings[0]|length > 50 %}...{% endif %}{% endif %}</summary>
+            {{ r.headings|join(' / ') }}
+          </details>
+        </td>
+        <td>
+          <details>
             <summary>{{ r.text[:50] }}{% if r.text|length > 50 %}...{% endif %}</summary>
             {{ r.text }}
           </details>
@@ -44,12 +50,14 @@
       </div>
     </details>
 
+    {% if common_subs %}
     <h2>共通本文サブ文字列</h2>
     <ul>
       {% for item in common_subs %}
         <li>{{ item.count }} 件 ({{ (item.ratio * 100)|round(1) }}%): {{ item.text }}</li>
       {% endfor %}
     </ul>
+    {% endif %}
 
     <h2>共通SEOタイトルサブ文字列</h2>
     <ul>
@@ -142,6 +150,9 @@
               <option value="{{ m }}" {% if form and form.analysis_mode == m %}selected{% endif %}>{{ m }}</option>
             {% endfor %}
           </select>
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" name="skip_common" {% if form and form.get('skip_common') %}checked{% endif %}> 本文一致率判定を行わない</label>
         </div>
         <div class="form-group" style="flex: 1 1 100%;">
           <label for="exclude_patterns">除外パターン（1行につき1つ、/regex/可）</label>

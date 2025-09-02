@@ -61,6 +61,7 @@ def run_analysis(
     merge_percent: float,
     generate_report: bool,
     generate_blog: bool,
+    body_match: bool,
     report_prompt: str = "",
     blog_prompt: str = "",
     blog_style: str = "",
@@ -121,6 +122,7 @@ def run_analysis(
             "links": data["links"],
             "word_count": word_count,
             "top_keywords": top_keywords,
+            "headings": data.get("headings", []),
             "text": data["text"][:analyze_chars],
         }
         with logs_lock:
@@ -138,21 +140,23 @@ def run_analysis(
                 titles.append(title)
 
     # まず多めに候補を取得し、フィルタ後に上位 rank_k 件へ絞り込む
-    raw_subs = common_substrings_rank(
-        texts,
-        analyze_chars=analyze_chars,
-        top_k=rank_k * 3,
-        remove_trans=remove_trans,
-        remove_patterns=remove_patterns,
-        max_doc_ratio=max_common_ratio,
-        mode=analysis_mode,
-    )
-    filtered = filter_common_phrases(raw_subs, keyword)[:rank_k]
-    total_docs = len(texts) if texts else 1
-    common_subs = [
-        {"text": sub, "count": cnt, "ratio": cnt / total_docs}
-        for sub, cnt in filtered
-    ]
+    common_subs = []
+    if body_match:
+        raw_subs = common_substrings_rank(
+            texts,
+            analyze_chars=analyze_chars,
+            top_k=rank_k * 3,
+            remove_trans=remove_trans,
+            remove_patterns=remove_patterns,
+            max_doc_ratio=max_common_ratio,
+            mode=analysis_mode,
+        )
+        filtered = filter_common_phrases(raw_subs, keyword)[:rank_k]
+        total_docs = len(texts) if texts else 1
+        common_subs = [
+            {"text": sub, "count": cnt, "ratio": cnt / total_docs}
+            for sub, cnt in filtered
+        ]
     title_ranks = rank_common_titles(
         titles,
         top_k=rank_k,
@@ -245,16 +249,20 @@ def stream_report():
     summary_lines = []
     for r in results[:5]:
         kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
-        summary_lines.append(f"- {r.get('title', '')} | キーワード: {kws}")
+        heads = "/".join(r.get("headings", [])[:3])
+        summary_lines.append(f"- {r.get('title', '')} | 見出し: {heads} | キーワード: {kws}")
     body = "\n".join(summary_lines)
     subs = "\n".join(f"- {s['text']} ({s['count']}件)" for s in common_subs[:5])
     titles = "\n".join(f"- {t} ({c}件)" for t, c in title_ranks[:5])
     prompt_txt = (
         f"検索キーワード: {keyword}\n"
         f"上位ページの概要:\n{body}\n\n"
-        f"共通本文フレーズ:\n{subs}\n\n"
+    )
+    if subs:
+        prompt_txt += f"共通本文フレーズ:\n{subs}\n\n"
+    prompt_txt += (
         f"共通SEOタイトルフレーズ:\n{titles}\n\n"
-        "これらを参考にSEO対策されたブログ記事を書くための指示書を日本語で作成してください。"
+        "これらを参考に、どのようなブログ記事を書けばよいかを日本語でまとめた指示書を作成してください。"
     )
     if prompt:
         prompt_txt += f"\n\n追加指示:\n{prompt}"
@@ -399,6 +407,7 @@ def index():
                 merge_percent = float(request.form.get('merge_percent', 18.0))
                 excl_lines = request.form.get('exclude_patterns', '').splitlines()
                 _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
+                skip_common = bool(request.form.get('skip_common'))
                 results, common_subs, title_ranks, _, _, _, logs = run_analysis(
                     keyword,
                     num_results,
@@ -413,6 +422,7 @@ def index():
                     merge_percent,
                     generate_report=False,
                     generate_blog=False,
+                    body_match=not skip_common,
                     model="gpt-oss:20b",
                 )
                 static_dir = os.path.join(os.path.dirname(__file__), 'static', 'scrapes')
@@ -424,6 +434,7 @@ def index():
                     'title_ranks': title_ranks,
                     'logs': logs,
                     'form': request.form,
+                    'skip_common': skip_common,
                     'instructions': None,
                     'instructions_html': None,
                     'report_file': None,
