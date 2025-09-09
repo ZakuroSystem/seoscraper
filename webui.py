@@ -120,14 +120,11 @@ def run_analysis(
     texts: List[str] = []
     titles: List[str] = []
 
-    def submit(u):
-        return process_url_proc((u, analyze_chars, merge_percent))
-
     with ProcessPoolExecutor(max_workers=workers) as ex:
         future_map = {}
         for u in urls:
             log(f"スクレイピング開始: {u}")
-            future_map[ex.submit(submit, u)] = u
+            future_map[ex.submit(process_url_proc, (u, analyze_chars, merge_percent))] = u
         for fut in as_completed(future_map):
             url = future_map[fut]
             res = fut.result()
