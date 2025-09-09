@@ -1,10 +1,11 @@
-from typing import Dict, List
+from typing import List
 from flask import Flask, render_template, request, url_for, Response, stream_with_context
 import threading
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import markdown
 import json
+import queue
 
 from scraper import (
     create_session,
@@ -50,6 +51,36 @@ def get_histories():
     }
 
 
+def process_url_proc(args):
+    url, analyze_chars, merge_percent = args
+    session = create_session()
+    domain = extract_domain(url)
+    if not robots_exists(session, url):
+        return {"status": "robots"}
+    html = fetch_html(session, url)
+    if not html:
+        return {"status": "fail"}
+    data = parse_html(html)
+    word_count, top_keywords = analyze_keywords(
+        data["text"], merge_threshold=merge_percent / 100.0
+    )
+    row = {
+        "url": url,
+        "domain": domain,
+        "published_time": data["published_time"],
+        "title": data["title"],
+        "description": data["description"],
+        "robots": True,
+        "images": data["images"],
+        "links": data["links"],
+        "word_count": word_count,
+        "top_keywords": top_keywords,
+        "headings": data.get("headings", []),
+        "text": data["text"][:analyze_chars],
+    }
+    return {"status": "ok", "row": row, "text": data["text"], "title": data["title"]}
+
+
 def run_analysis(
     keyword: str,
     num_results: int,
@@ -70,80 +101,47 @@ def run_analysis(
     blog_style: str = "",
     human_mode: bool = False,
     model: str = "gpt-oss:20b",
+    log_cb=None,
 ):
     """検索と解析を実行し結果を返す"""
-    logs = []
-    logs_lock = threading.Lock()
+    logs: List[str] = []
+    def log(message: str):
+        if log_cb:
+            log_cb(message)
+        logs.append(message)
     urls = []
     keywords = [k.strip() for k in keyword.splitlines() if k.strip()]
     for kw in keywords:
-        with logs_lock:
-            logs.append(f"Google検索に問い合わせ中: {kw}")
+        log(f"Google検索に問い合わせ中: {kw}")
         res = get_search_results(kw, num_results, delay)
-        with logs_lock:
-            logs.append(f"検索結果を{len(res)}件取得しました: {kw}")
+        log(f"検索結果を{len(res)}件取得しました: {kw}")
         urls.extend(res)
-    robots_cache: Dict[str, bool] = {}
-    robots_lock = threading.Lock()
-    results = []
-    texts = []
-    titles = []
-    thread_local = threading.local()
+    results: List[dict] = []
+    texts: List[str] = []
+    titles: List[str] = []
 
-    def process_url(url: str):
-        session = getattr(thread_local, "session", None)
-        if session is None:
-            session = create_session()
-            thread_local.session = session
-        with logs_lock:
-            logs.append(f"スクレイピング開始: {url}")
-        domain = extract_domain(url)
-        with robots_lock:
-            robots = robots_cache.get(domain)
-        if robots is None:
-            robots = robots_exists(session, url)
-            with robots_lock:
-                robots_cache[domain] = robots
-        if not robots:
-            with logs_lock:
-                logs.append(f"robots.txtでアクセス拒否: {url}")
-            return None
-        html = fetch_html(session, url)
-        if not html:
-            with logs_lock:
-                logs.append(f"取得失敗: {url}")
-            return None
-        data = parse_html(html)
-        word_count, top_keywords = analyze_keywords(
-            data["text"], merge_threshold=merge_percent / 100.0
-        )
-        row = {
-            "url": url,
-            "domain": domain,
-            "published_time": data["published_time"],
-            "title": data["title"],
-            "description": data["description"],
-            "robots": robots,
-            "images": data["images"],
-            "links": data["links"],
-            "word_count": word_count,
-            "top_keywords": top_keywords,
-            "headings": data.get("headings", []),
-            "text": data["text"][:analyze_chars],
-        }
-        with logs_lock:
-            logs.append(f"スクレイピング完了: {url}")
-        return row, data["text"], data["title"]
+    def submit(u):
+        return process_url_proc((u, analyze_chars, merge_percent))
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [ex.submit(process_url, u) for u in urls]
-        for fut in as_completed(futures):
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        future_map = {}
+        for u in urls:
+            log(f"スクレイピング開始: {u}")
+            future_map[ex.submit(submit, u)] = u
+        for fut in as_completed(future_map):
+            url = future_map[fut]
             res = fut.result()
-            if res:
-                row, text, title = res
+            status = res.get("status")
+            if status == "ok":
+                row = res["row"]
                 results.append(row)
-                texts.append(text)
-                titles.append(title)
+                texts.append(res["text"])
+                titles.append(res["title"])
+                log(f"スクレイピング完了: {url}")
+            elif status == "robots":
+                log(f"robots.txtでアクセス拒否: {url}")
+            else:
+                log(f"取得失敗: {url}")
 
     # まず多めに候補を取得し、フィルタ後に上位 rank_k 件へ絞り込む
     common_subs = []
@@ -233,6 +231,110 @@ def run_analysis(
     return results, common_subs, title_ranks, instructions, blog_post, blog_file, logs
 
 
+@app.route('/stream_analysis')
+def stream_analysis():
+    params = request.args
+    keyword = params.get('keyword', '')
+    if not keyword:
+        def gen_empty():
+            yield "data: {\"error\": \"no keyword\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    num_results = min(int(params.get('num_results', 10)), 50)
+    delay = float(params.get('delay', 0.0))
+    workers = int(params.get('workers', os.cpu_count() or 1))
+    analyze_chars = int(params.get('analyze_chars', 5000))
+    rank_k = int(params.get('rank_k', 15))
+    max_common_ratio = float(params.get('max_common_ratio', 0.8))
+    analysis_mode = params.get('analysis_mode', 'tiktoken')
+    merge_percent = float(params.get('merge_percent', 18.0))
+    excl_lines = params.get('exclude_patterns', '').splitlines()
+    _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
+    skip_common = params.get('skip_common') in ('1', 'on', 'true')
+    q: "queue.Queue" = queue.Queue()
+
+    def log_cb(msg: str):
+        q.put({'log': msg})
+
+    def worker():
+        res = run_analysis(
+            keyword,
+            num_results,
+            delay,
+            rank_k,
+            analyze_chars,
+            max_common_ratio,
+            analysis_mode,
+            workers,
+            remove_trans,
+            remove_patterns,
+            merge_percent,
+            generate_report=False,
+            generate_blog=False,
+            body_match=not skip_common,
+            model='gpt-oss:20b',
+            log_cb=log_cb,
+        )
+        q.put({'done': res})
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def gen():
+        while True:
+            item = q.get()
+            if 'log' in item:
+                yield f"data: {json.dumps({'log': item['log']})}\n\n"
+            else:
+                results, common_subs, title_ranks, _, _, _, logs = item['done']
+                static_dir = os.path.join(os.path.dirname(__file__), 'static', 'scrapes')
+                save_scrape_json(results, keyword, directory=static_dir)
+                last_state.update({
+                    'keyword': keyword,
+                    'results': results,
+                    'common_subs': common_subs,
+                    'title_ranks': title_ranks,
+                    'logs': logs,
+                    'form': params,
+                    'skip_common': skip_common,
+                    'instructions': None,
+                    'instructions_html': None,
+                    'report_file': None,
+                    'blog_post': None,
+                    'blog_html': None,
+                    'blog_file': None,
+                    'info_blog_post': None,
+                    'info_blog_html': None,
+                    'info_blog_file': None,
+                    'info_html_mode': False,
+                    'report_prompt': '',
+                    'blog_prompt': '',
+                    'blog_style': '標準',
+                    'human_mode': False,
+                    'html_mode': False,
+                })
+                hist = get_histories()
+                html = render_template(
+                    'results.html',
+                    results=results,
+                    common_subs=common_subs,
+                    title_ranks=title_ranks,
+                    instructions=None,
+                    blog_post=None,
+                    info_blog_post=None,
+                    logs=[],
+                    report_prompt='',
+                    blog_prompt='',
+                    blog_style='標準',
+                    human_mode=False,
+                    html_mode=False,
+                    scrape_history=hist['scrapes'],
+                    report_history=hist['reports'],
+                    blog_history=hist['blogs'],
+                )
+                payload = {'done': True, 'html': html}
+                yield f"data: {json.dumps(payload)}\n\n"
+                break
+
+    return Response(stream_with_context(gen()), mimetype='text/event-stream')
 @app.route('/stream_report')
 def stream_report():
     if not last_state.get('results'):
