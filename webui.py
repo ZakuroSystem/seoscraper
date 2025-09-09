@@ -28,7 +28,13 @@ from scraper import (
     save_report_markdown,
     save_scrape_json,
     have_ollama_model,
-    DEFAULT_EXTRA_INSTRUCTION,
+)
+
+from prompts import (
+    build_instruction_messages,
+    build_blog_messages,
+    build_review_messages,
+    build_revise_messages,
 )
 
 app = Flask(__name__)
@@ -384,30 +390,13 @@ def stream_report():
     common_subs = last_state['common_subs']
     title_ranks = last_state['title_ranks']
     keyword = last_state['keyword']
-    summary_lines = []
-    for r in results[:5]:
-        kws = ", ".join(k["keyword"] for k in r.get("top_keywords", [])[:3])
-        heads = "/".join(r.get("headings", [])[:3])
-        summary_lines.append(f"- {r.get('title', '')} | 見出し: {heads} | キーワード: {kws}")
-    body = "\n".join(summary_lines)
-    subs = "\n".join(f"- {s['text']} ({s['count']}件)" for s in common_subs[:5])
-    titles = "\n".join(f"- {t} ({c}件)" for t, c in title_ranks[:5])
-    prompt_txt = (
-        f"検索キーワード: {keyword}\n"
-        f"上位ページの概要:\n{body}\n\n"
+    messages = build_instruction_messages(
+        keyword,
+        results,
+        common_subs,
+        title_ranks,
+        user_prompt=prompt,
     )
-    if subs:
-        prompt_txt += f"共通本文フレーズ:\n{subs}\n\n"
-    prompt_txt += (
-        f"共通SEOタイトルフレーズ:\n{titles}\n\n"
-        "これらを参考に、どのようなブログ記事を書けばよいかを日本語でまとめた指示書を作成してください。"
-    )
-    if prompt:
-        prompt_txt += f"\n\n追加指示:\n{prompt}"
-    messages = [
-        {"role": "system", "content": "You are an expert Japanese SEO consultant."},
-        {"role": "user", "content": prompt_txt},
-    ]
 
     def generate():
         yield f"data: {{\"status\": \"指示書生成を開始します\"}}\n\n"
@@ -455,37 +444,15 @@ def stream_blog():
 
     keyword = last_state['keyword']
     instructions = last_state['instructions']
-    fmt = "Markdown"
-    prompt_txt = (
-        f"検索キーワード: {keyword}\n"
-        f"以下の指示書に従って、日本語でSEOに最適化されたブログ記事を{fmt}形式で作成してください。\n\n"
-        f"{instructions}\n"
+    messages = build_blog_messages(
+        keyword,
+        instructions,
+        user_prompt=prompt,
+        style=style,
+        human_mode=human,
+        info_only=info,
+        html_mode=False,
     )
-    if style:
-        prompt_txt += f"\nブログの雰囲気: {style}\n"
-    if human:
-        prompt_txt += (
-            "\nAIで生成されたと気付かれないよう、人間らしい自然な語り口で書いてください。"
-            "以下の点にも留意してください:\n"
-            "- 見出し番号など機械的な構成を避け、節ごとに変化を付ける\n"
-            "- 金額や数値は現実的な揺らぎを含め、過度に整列させない\n"
-            "- 不自然な語句や誤用を避け、文脈に合う語彙を選ぶ\n"
-            "- 汎用的なマーケティング文句を多用せず具体例や根拠を示す\n"
-            "- 表やFAQなどの装飾は必要なものだけに留める\n"
-        )
-    if prompt:
-        prompt_txt += f"\n追加指示:\n{DEFAULT_EXTRA_INSTRUCTION}\n{prompt}\n"
-    else:
-        prompt_txt += f"\n追加指示:\n{DEFAULT_EXTRA_INSTRUCTION}\n"
-    if info:
-        prompt_txt += "\n案件や見積りへの誘導は行わず、情報提供のみに集中してください。"
-    messages = [
-        {
-            "role": "system",
-            "content": f"You are a skilled Japanese blogger. Output {fmt}.",
-        },
-        {"role": "user", "content": prompt_txt},
-    ]
 
     def generate():
         yield f"data: {{\"status\": \"ブログ生成を開始します\"}}\n\n"
@@ -555,10 +522,7 @@ def stream_review():
         return Response(gen_model(), mimetype='text/event-stream')
     blog = last_state['blog_post']
     keyword = last_state['keyword'] + "_review"
-    messages = [
-        {"role": "system", "content": "You are an expert Japanese editor."},
-        {"role": "user", "content": f"このブログを評価して修正点をまとめてください。\n\n{blog}"},
-    ]
+    messages = build_review_messages(blog)
 
     def generate():
         yield f"data: {{\"status\": \"ブログ評価を開始します\"}}\n\n"
@@ -604,18 +568,7 @@ def stream_revise():
     keyword = last_state['keyword'] + "_revise"
     style = last_state.get('blog_style', '標準')
     human = last_state.get('human_mode', False)
-    prompt_txt = (
-        "ブログを修正点を適応して読みやすく修正してください。\n\n"
-        f"修正点:\n{review}\n\nブログ本文:\n{blog}"
-    )
-    if style:
-        prompt_txt += f"\nブログの雰囲気: {style}"
-    if human:
-        prompt_txt += "\n人間らしい自然な語り口で書いてください。"
-    messages = [
-        {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
-        {"role": "user", "content": prompt_txt},
-    ]
+    messages = build_revise_messages(blog, review, style=style, human=human)
 
     def generate():
         yield f"data: {{\"status\": \"修正ブログ生成を開始します\"}}\n\n"
