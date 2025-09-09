@@ -133,6 +133,20 @@
       const params=new URLSearchParams(new FormData(form, e.submitter));
       const logEl=document.getElementById(logId);
       const resEl=document.getElementById(resultId);
+      const action=params.get('action');
+      if(action==='expand'){
+        fetch('/expand_keywords',{
+          method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded'},
+          body:params.toString()
+        }).then(r=>r.json()).then(data=>{
+          document.getElementById('keyword').value=data.keyword;
+          if(logEl) logEl.textContent=(data.logs||[]).join('\n');
+        }).catch(err=>{
+          if(logEl) logEl.textContent='Error: '+err+'\n';
+        });
+        return;
+      }
       logEl.textContent='';
       const src=new EventSource(url + '?' + params.toString());
       src.onmessage=function(ev){

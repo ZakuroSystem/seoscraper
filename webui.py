@@ -1,5 +1,5 @@
 from typing import List
-from flask import Flask, render_template, request, url_for, Response, stream_with_context
+from flask import Flask, render_template, request, url_for, Response, stream_with_context, jsonify
 import threading
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -229,6 +229,25 @@ def run_analysis(
         with logs_lock:
             logs.append("ブログ生成をスキップしました")
     return results, common_subs, title_ranks, instructions, blog_post, blog_file, logs
+
+
+@app.route('/expand_keywords', methods=['POST'])
+def expand_keywords_route():
+    keyword = request.form.get('keyword', '')
+    logs: List[str] = []
+    added_all: List[str] = []
+    for line in [k.strip() for k in keyword.splitlines() if k.strip()]:
+        extra, err = generate_similar_keywords(line)
+        if extra:
+            added_all.extend(extra)
+            logs.append('類似キーワードを追加: ' + ', '.join(extra))
+        else:
+            logs.append(f'類似キーワード生成失敗 ({line}): {err}')
+    if added_all:
+        if keyword and not keyword.endswith('\n'):
+            keyword += '\n'
+        keyword += '\n'.join(added_all)
+    return jsonify({'keyword': keyword, 'logs': logs})
 
 
 @app.route('/stream_analysis')
