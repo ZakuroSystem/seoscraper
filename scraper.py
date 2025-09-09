@@ -74,13 +74,20 @@ def get_search_results(query: str, num_results: int, pause: float) -> List[str]:
     num_results = min(num_results, 50)
     urls: List[str] = []
     keywords = [q.strip() for q in query.splitlines() if q.strip()]
-    for q in keywords:
+
+    def fetch(q: str) -> List[str]:
         try:
             res = list(search(q, num_results=num_results, sleep_interval=pause))
             logging.info("Search ok: %s (hits=%d)", q, len(res))
-            urls.extend(res)
+            return res
         except Exception as e:
             logging.error("Search failed (%s): %s", q, e)
+            return []
+
+    max_workers = min(len(keywords), os.cpu_count() or 4) or 1
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for res in ex.map(fetch, keywords):
+            urls.extend(res)
     return urls
 
 
@@ -1140,7 +1147,7 @@ def main():
     parser.add_argument('keyword', nargs='?', help='検索キーワード（--analysis-load を使う場合は省略可）')
     parser.add_argument('-n', '--num-results', type=int, default=10, help='取得するURLの件数')
     parser.add_argument('--delay', type=float, default=0.0, help='各リクエスト前の待機秒数')
-    parser.add_argument('--workers', type=int, default=10, help='同時リクエスト数')
+    parser.add_argument('--workers', type=int, default=os.cpu_count() or 4, help='同時リクエスト数')
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
     parser.add_argument('--merge-percent', type=float, default=18.0,
                         help='類似キーワードを統合する最大編集距離(%)')

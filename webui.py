@@ -399,6 +399,7 @@ def stream_blog():
 @app.route('/', methods=['GET', 'POST'])
 def index():
     global last_state
+    cpu_count = os.cpu_count() or 4
     if request.method == 'POST':
         action = request.form.get('action', 'scrape')
         if action == 'expand':
@@ -442,13 +443,14 @@ def index():
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
+                cpu_count=cpu_count,
             )
         if action == 'scrape':
             keyword = request.form.get('keyword', '')
             if keyword:
                 num_results = min(int(request.form.get('num_results', 10)), 50)
                 delay = float(request.form.get('delay', 0.1))
-                workers = int(request.form.get('workers', 10))
+                workers = int(request.form.get('workers', cpu_count))
                 analyze_chars = int(request.form.get('analyze_chars', 5000))
                 rank_k = int(request.form.get('rank_k', 15))
                 max_common_ratio = float(request.form.get('max_common_ratio', 0.8))
@@ -512,20 +514,21 @@ def index():
                     blog_post=None,
                     blog_html=None,
                     blog_file=None,
-                info_blog_post=None,
-                info_blog_html=None,
-                info_blog_file=None,
-                info_html_mode=False,
-                logs=logs,
-                form=request.form,
-                report_prompt='',
-                blog_prompt='',
-                blog_style='標準',
+                    info_blog_post=None,
+                    info_blog_html=None,
+                    info_blog_file=None,
+                    info_html_mode=False,
+                    logs=logs,
+                    form=request.form,
+                    report_prompt='',
+                    blog_prompt='',
+                    blog_style='標準',
                     human_mode=False,
                     html_mode=False,
                     scrape_history=hist['scrapes'],
                     report_history=hist['reports'],
                     blog_history=hist['blogs'],
+                    cpu_count=cpu_count,
                 )
         elif action == 'report' and last_state.get('results'):
             logs = last_state.get('logs', []).copy()
@@ -594,6 +597,7 @@ def index():
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
+                cpu_count=cpu_count,
             )
         elif action == 'blog' and last_state.get('instructions'):
             logs = last_state.get('logs', []).copy()
@@ -664,6 +668,7 @@ def index():
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
+                cpu_count=cpu_count,
             )
         elif action == 'convert_html' and last_state.get('blog_post'):
             logs = last_state.get('logs', []).copy()
@@ -705,6 +710,7 @@ def index():
                     scrape_history=hist['scrapes'],
                     report_history=hist['reports'],
                     blog_history=hist['blogs'],
+                    cpu_count=cpu_count,
                 )
             hist = get_histories()
             return render_template(
@@ -732,6 +738,7 @@ def index():
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
+                cpu_count=cpu_count,
             )
         elif action == 'blog_info' and last_state.get('results'):
             logs = last_state.get('logs', []).copy()
@@ -820,6 +827,7 @@ def index():
                 scrape_history=hist['scrapes'],
                 report_history=hist['reports'],
                 blog_history=hist['blogs'],
+                cpu_count=cpu_count,
             )
     hist = get_histories()
     return render_template(
@@ -845,6 +853,7 @@ def index():
         scrape_history=hist['scrapes'],
         report_history=hist['reports'],
         blog_history=hist['blogs'],
+        cpu_count=cpu_count,
     )
 
 
