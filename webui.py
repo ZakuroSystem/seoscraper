@@ -327,6 +327,12 @@ def stream_analysis():
                     'blog_style': '標準',
                     'human_mode': False,
                     'html_mode': False,
+                    'blog_review': None,
+                    'blog_review_html': None,
+                    'review_file': None,
+                    'rev_blog_post': None,
+                    'rev_blog_html': None,
+                    'rev_blog_file': None,
                 })
                 hist = get_histories()
                 html = render_template(
@@ -336,6 +342,13 @@ def stream_analysis():
                     title_ranks=title_ranks,
                     instructions=None,
                     blog_post=None,
+                    blog_html=None,
+                    blog_review=None,
+                    blog_review_html=None,
+                    review_file=None,
+                    rev_blog_post=None,
+                    rev_blog_html=None,
+                    rev_blog_file=None,
                     info_blog_post=None,
                     logs=[],
                     report_prompt='',
@@ -493,6 +506,12 @@ def stream_blog():
                 'blog_style': style,
                 'human_mode': human,
                 'info_html_mode': False,
+                'blog_review': None,
+                'blog_review_html': None,
+                'review_file': None,
+                'rev_blog_post': None,
+                'rev_blog_html': None,
+                'rev_blog_file': None,
             })
         else:
             last_state.update({
@@ -503,12 +522,121 @@ def stream_blog():
                 'blog_style': style,
                 'human_mode': human,
                 'html_mode': False,
+                'blog_review': None,
+                'blog_review_html': None,
+                'review_file': None,
+                'rev_blog_post': None,
+                'rev_blog_html': None,
+                'rev_blog_file': None,
             })
         done_payload = {
             "done": True,
             "html": blog_html,
             "file": os.path.basename(path),
             "html_mode": False,
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/stream_review')
+def stream_review():
+    if not last_state.get('blog_post'):
+        def gen_empty():
+            yield "data: {\"error\": \"no blog\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    hi = request.args.get('hi') == '1'
+    model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
+    timeout = 690 if hi else 160
+    if not have_ollama_model(model):
+        def gen_model():
+            yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
+        return Response(gen_model(), mimetype='text/event-stream')
+    blog = last_state['blog_post']
+    keyword = last_state['keyword'] + "_review"
+    messages = [
+        {"role": "system", "content": "You are an expert Japanese editor."},
+        {"role": "user", "content": f"このブログを評価して修正点をまとめてください。\n\n{blog}"},
+    ]
+
+    def generate():
+        yield f"data: {{\"status\": \"ブログ評価を開始します\"}}\n\n"
+        buf = []
+        for token in ollama_chat_stream(model, messages, timeout=timeout):
+            buf.append(token)
+            yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
+        full = ''.join(buf)
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+        path = save_blog_markdown(full, keyword, directory=static_dir)
+        review_html = markdown.markdown(full, extensions=["extra"])
+        last_state.update({
+            'blog_review': full,
+            'blog_review_html': review_html,
+            'review_file': os.path.basename(path),
+        })
+        done_payload = {
+            'done': True,
+            'html': review_html,
+            'file': os.path.basename(path),
+            'html_mode': False,
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/stream_revise')
+def stream_revise():
+    if not last_state.get('blog_post') or not last_state.get('blog_review'):
+        def gen_empty():
+            yield "data: {\"error\": \"no review\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    hi = request.args.get('hi') == '1'
+    model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
+    timeout = 690 if hi else 160
+    if not have_ollama_model(model):
+        def gen_model():
+            yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
+        return Response(gen_model(), mimetype='text/event-stream')
+    blog = last_state['blog_post']
+    review = last_state['blog_review']
+    keyword = last_state['keyword'] + "_revise"
+    style = last_state.get('blog_style', '標準')
+    human = last_state.get('human_mode', False)
+    prompt_txt = (
+        "ブログを修正点を適応して読みやすく修正してください。\n\n"
+        f"修正点:\n{review}\n\nブログ本文:\n{blog}"
+    )
+    if style:
+        prompt_txt += f"\nブログの雰囲気: {style}"
+    if human:
+        prompt_txt += "\n人間らしい自然な語り口で書いてください。"
+    messages = [
+        {"role": "system", "content": "You are a skilled Japanese blogger. Output Markdown."},
+        {"role": "user", "content": prompt_txt},
+    ]
+
+    def generate():
+        yield f"data: {{\"status\": \"修正ブログ生成を開始します\"}}\n\n"
+        buf = []
+        for token in ollama_chat_stream(model, messages, timeout=timeout):
+            buf.append(token)
+            yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
+        full = ''.join(buf)
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+        path = save_blog_markdown(full, keyword, directory=static_dir)
+        blog_html = markdown.markdown(full, extensions=["extra"])
+        last_state.update({
+            'rev_blog_post': full,
+            'rev_blog_html': blog_html,
+            'rev_blog_file': os.path.basename(path),
+        })
+        done_payload = {
+            'done': True,
+            'html': blog_html,
+            'file': os.path.basename(path),
+            'html_mode': False,
         }
         yield f"data: {json.dumps(done_payload)}\n\n"
 
@@ -550,6 +678,12 @@ def index():
                 blog_post=None,
                 blog_html=None,
                 blog_file=None,
+                blog_review=None,
+                blog_review_html=None,
+                review_file=None,
+                rev_blog_post=None,
+                rev_blog_html=None,
+                rev_blog_file=None,
                 info_blog_post=None,
                 info_blog_html=None,
                 info_blog_file=None,
@@ -620,6 +754,12 @@ def index():
                     'blog_style': '標準',
                     'human_mode': False,
                     'html_mode': False,
+                    'blog_review': None,
+                    'blog_review_html': None,
+                    'review_file': None,
+                    'rev_blog_post': None,
+                    'rev_blog_html': None,
+                    'rev_blog_file': None,
                 }
                 hist = get_histories()
                 return render_template(
@@ -633,6 +773,12 @@ def index():
                     blog_post=None,
                     blog_html=None,
                     blog_file=None,
+                    blog_review=None,
+                    blog_review_html=None,
+                    review_file=None,
+                    rev_blog_post=None,
+                    rev_blog_html=None,
+                    rev_blog_file=None,
                     info_blog_post=None,
                     info_blog_html=None,
                     info_blog_file=None,
@@ -690,6 +836,19 @@ def index():
                 'report_file': report_file,
                 'logs': logs,
                 'report_prompt': report_prompt,
+                'blog_post': None,
+                'blog_html': None,
+                'blog_file': None,
+                'info_blog_post': None,
+                'info_blog_html': None,
+                'info_blog_file': None,
+                'info_html_mode': False,
+                'blog_review': None,
+                'blog_review_html': None,
+                'review_file': None,
+                'rev_blog_post': None,
+                'rev_blog_html': None,
+                'rev_blog_file': None,
             })
             hist = get_histories()
             return render_template(
@@ -703,6 +862,12 @@ def index():
                 blog_post=None,
                 blog_html=None,
                 blog_file=None,
+                blog_review=last_state.get('blog_review'),
+                blog_review_html=last_state.get('blog_review_html'),
+                review_file=last_state.get('review_file'),
+                rev_blog_post=last_state.get('rev_blog_post'),
+                rev_blog_html=last_state.get('rev_blog_html'),
+                rev_blog_file=last_state.get('rev_blog_file'),
                 info_blog_post=last_state.get('info_blog_post'),
                 info_blog_html=last_state.get('info_blog_html'),
                 info_blog_file=last_state.get('info_blog_file'),
@@ -760,6 +925,12 @@ def index():
                 'blog_style': blog_style,
                 'human_mode': human_mode,
                 'html_mode': False,
+                'blog_review': None,
+                'blog_review_html': None,
+                'review_file': None,
+                'rev_blog_post': None,
+                'rev_blog_html': None,
+                'rev_blog_file': None,
             })
             hist = get_histories()
             return render_template(
@@ -773,6 +944,12 @@ def index():
                 blog_post=blog_post,
                 blog_html=blog_html,
                 blog_file=blog_file,
+                blog_review=last_state.get('blog_review'),
+                blog_review_html=last_state.get('blog_review_html'),
+                review_file=last_state.get('review_file'),
+                rev_blog_post=last_state.get('rev_blog_post'),
+                rev_blog_html=last_state.get('rev_blog_html'),
+                rev_blog_file=last_state.get('rev_blog_file'),
                 info_blog_post=last_state.get('info_blog_post'),
                 info_blog_html=last_state.get('info_blog_html'),
                 info_blog_file=last_state.get('info_blog_file'),
@@ -815,6 +992,12 @@ def index():
                     blog_post=last_state.get('blog_post'),
                     blog_html=last_state.get('blog_html'),
                     blog_file=blog_file,
+                    blog_review=last_state.get('blog_review'),
+                    blog_review_html=last_state.get('blog_review_html'),
+                    review_file=last_state.get('review_file'),
+                    rev_blog_post=last_state.get('rev_blog_post'),
+                    rev_blog_html=last_state.get('rev_blog_html'),
+                    rev_blog_file=last_state.get('rev_blog_file'),
                     info_blog_post=last_state.get('info_blog_post'),
                     info_blog_html=last_state.get('info_blog_html'),
                     info_blog_file=last_state.get('info_blog_file'),
@@ -843,6 +1026,12 @@ def index():
                 blog_post=last_state.get('blog_post'),
                 blog_html=html,
                 blog_file=blog_file,
+                blog_review=last_state.get('blog_review'),
+                blog_review_html=last_state.get('blog_review_html'),
+                review_file=last_state.get('review_file'),
+                rev_blog_post=last_state.get('rev_blog_post'),
+                rev_blog_html=last_state.get('rev_blog_html'),
+                rev_blog_file=last_state.get('rev_blog_file'),
                 info_blog_post=last_state.get('info_blog_post'),
                 info_blog_html=last_state.get('info_blog_html'),
                 info_blog_file=last_state.get('info_blog_file'),
@@ -932,6 +1121,12 @@ def index():
                 blog_post=last_state.get('blog_post'),
                 blog_html=last_state.get('blog_html'),
                 blog_file=last_state.get('blog_file'),
+                blog_review=last_state.get('blog_review'),
+                blog_review_html=last_state.get('blog_review_html'),
+                review_file=last_state.get('review_file'),
+                rev_blog_post=last_state.get('rev_blog_post'),
+                rev_blog_html=last_state.get('rev_blog_html'),
+                rev_blog_file=last_state.get('rev_blog_file'),
                 info_blog_post=blog_post,
                 info_blog_html=blog_html,
                 info_blog_file=blog_file,
@@ -959,6 +1154,12 @@ def index():
         blog_post=None,
         blog_html=None,
         blog_file=None,
+        blog_review=None,
+        blog_review_html=None,
+        review_file=None,
+        rev_blog_post=None,
+        rev_blog_html=None,
+        rev_blog_file=None,
         info_blog_post=None,
         info_blog_html=None,
         info_blog_file=None,

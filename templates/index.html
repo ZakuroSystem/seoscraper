@@ -115,6 +115,12 @@
           if(formId === 'report-form'){
             const blogSec = document.getElementById('blog-section');
             if(blogSec) blogSec.style.display = 'block';
+          } else if(formId === 'blog-form'){
+            const reviewSec = document.getElementById('review-section');
+            if(reviewSec) reviewSec.style.display = 'block';
+          } else if(formId === 'review-form'){
+            const revSec = document.getElementById('revise-section');
+            if(revSec) revSec.style.display = 'block';
           }
           src.close();
         }
@@ -164,6 +170,12 @@
             if(p.get('action')==='blog_info'){p.set('info','1');}
             p.delete('action');
           });
+          attachStream('review-form','/stream_review','review-stream','review-preview','review-download', p=>{
+            p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
+          });
+          attachStream('revise-form','/stream_revise','revise-stream','revise-preview','revise-download', p=>{
+            p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
+          });
         }else if(data.error){
           logEl.textContent+='Error: '+data.error+'\n';
           src.close();
@@ -185,6 +197,12 @@
       p.set('info','1');
     }
     p.delete('action');
+  });
+  attachStream('review-form','/stream_review','review-stream','review-preview','review-download', p=>{
+    p.set('hi', document.getElementById('blog_hi')?.checked ? '1':'0');
+  });
+  attachStream('revise-form','/stream_revise','revise-stream','revise-preview','revise-download', p=>{
+    p.set('hi', document.getElementById('blog_hi')?.checked ? '1':'0');
   });
   function warnToggle(boxId, warnId){
     const box=document.getElementById(boxId);const warn=document.getElementById(warnId);if(box&&warn){box.addEventListener('change',()=>{warn.style.display=box.checked?'inline':'none';});}}

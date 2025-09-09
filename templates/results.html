@@ -87,6 +87,22 @@
   <button type="submit">HTML化</button>
 </form>
 {% endif %}
+<div id="review-section" style="display:{% if blog_review or rev_blog_post %}block{% else %}none{% endif %};">
+  <form id="review-form">
+    <button type="submit">生成されたブログをAIで評価</button>
+  </form>
+  <pre id="review-stream" class="stream-box"></pre>
+  <div id="review-preview" class="markdown-preview">{% if blog_review_html %}{{ blog_review_html|safe }}{% endif %}</div>
+  <p id="review-download">{% if review_file %}<a href="{{ url_for('static', filename='blogs/' + review_file) }}" download>Markdownダウンロード</a>{% endif %}</p>
+</div>
+<div id="revise-section" style="display:{% if rev_blog_post %}block{% else %}none{% endif %};">
+  <form id="revise-form">
+    <button type="submit">ブログ修正版を作成</button>
+  </form>
+  <pre id="revise-stream" class="stream-box"></pre>
+  <div id="revise-preview" class="markdown-preview">{% if rev_blog_html %}{{ rev_blog_html|safe }}{% endif %}</div>
+  <p id="revise-download">{% if rev_blog_file %}<a href="{{ url_for('static', filename='blogs/' + rev_blog_file) }}" download>Markdownダウンロード</a>{% endif %}</p>
+</div>
 {% endif %}
 {% if info_blog_post %}
 <h2>情報提供ブログ記事</h2>
