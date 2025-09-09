@@ -1,0 +1,190 @@
+{% if results %}
+<details>
+  <summary>ページ別の詳細を表示</summary>
+  <h2>検索結果</h2>
+  <div class="table-wrapper">
+  <table>
+  <tr><th>URL</th><th>ドメイン</th><th>公開日</th><th>SEOタイトル</th><th>説明</th><th>robots.txt</th><th>語数</th><th>上位キーワード</th><th>画像数</th><th>リンク数</th><th>見出し</th><th>本文</th></tr>
+  {% for r in results %}
+  <tr>
+    <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
+    <td>{{ r.domain }}</td>
+    <td>{{ r.published_time }}</td>
+    <td>{{ r.title }}</td>
+    <td><details><summary>{{ r.description[:50] }}{% if r.description|length > 50 %}...{% endif %}</summary>{{ r.description }}</details></td>
+    <td>{{ 'あり' if r.robots else 'なし' }}</td>
+    <td>{{ r.word_count }}</td>
+    <td>{% for kw in r.top_keywords %}{{ kw.keyword }}:{{ kw.count }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+    <td>{{ r.images }}</td>
+    <td>{{ r.links }}</td>
+    <td><details><summary>{% if r.headings %}{{ r.headings[0][:50] }}{% if r.headings[0]|length > 50 %}...{% endif %}{% endif %}</summary>{{ r.headings|join(' / ') }}</details></td>
+    <td><details><summary>{{ r.text[:50] }}{% if r.text|length > 50 %}...{% endif %}</summary>{{ r.text }}</details></td>
+  </tr>
+  {% endfor %}
+  </table>
+  </div>
+</details>
+
+{% if results %}
+<details>
+  <summary>ページ別の詳細を表示</summary>
+  <h2>検索結果</h2>
+  <div class="table-wrapper">
+  <table>
+  <tr><th>URL</th><th>ドメイン</th><th>公開日</th><th>SEOタイトル</th><th>説明</th><th>robots.txt</th><th>語数</th><th>上位キーワード</th><th>画像数</th><th>リンク数</th><th>見出し</th><th>本文</th></tr>
+  {% for r in results %}
+  <tr>
+    <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
+    <td>{{ r.domain }}</td>
+    <td>{{ r.published_time }}</td>
+    <td>{{ r.title }}</td>
+    <td><details><summary>{{ r.description[:50] }}{% if r.description|length > 50 %}...{% endif %}</summary>{{ r.description }}</details></td>
+    <td>{{ 'あり' if r.robots else 'なし' }}</td>
+    <td>{{ r.word_count }}</td>
+    <td>{% for kw in r.top_keywords %}{{ kw.keyword }}:{{ kw.count }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+    <td>{{ r.images }}</td>
+    <td>{{ r.links }}</td>
+    <td><details><summary>{% if r.headings %}{{ r.headings[0][:50] }}{% if r.headings[0]|length > 50 %}...{% endif %}{% endif %}</summary>{{ r.headings|join(' / ') }}</details></td>
+    <td><details><summary>{{ r.text[:50] }}{% if r.text|length > 50 %}...{% endif %}</summary>{{ r.text }}</details></td>
+  </tr>
+  {% endfor %}
+  </table>
+  </div>
+</details>
+
+{% if common_subs %}
+<h2>共通本文サブ文字列</h2>
+<ul>
+{% for item in common_subs %}
+  <li>{{ item.count }} 件 ({{ (item.ratio * 100)|round(1) }}%): {{ item.text }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<h2>共通SEOタイトルサブ文字列</h2>
+<ul>
+{% for title, cnt in title_ranks %}
+  <li>{{ cnt }} 件: {{ title }}</li>
+{% endfor %}
+</ul>
+{% if instructions %}
+<h2>ブログ作成指示書</h2>
+<div class="markdown-preview">{{ instructions_html|safe }}</div>
+<details><summary>Markdownを表示</summary><pre>{{ instructions }}</pre></details>
+{% if report_file %}<p><a href="{{ url_for('static', filename='reports/' + report_file) }}" download>レポートダウンロード</a></p>{% endif %}
+{% endif %}
+{% if blog_post %}
+<h2>生成されたブログ記事</h2>
+{% if html_mode %}
+<div class="html-preview"><iframe class="html-frame" srcdoc="{{ blog_html|replace('"','&quot;')|safe }}"></iframe></div>
+{% if blog_file %}<p><a href="{{ url_for('static', filename='blogs/' + blog_file) }}" download>HTMLダウンロード</a></p>{% endif %}
+{% else %}
+<div class="markdown-preview">{{ blog_html|safe }}</div>
+<details><summary>Markdownを表示</summary><pre>{{ blog_post }}</pre></details>
+{% if blog_file %}<p><a href="{{ url_for('static', filename='blogs/' + blog_file) }}" download>Markdownダウンロード</a></p>{% endif %}
+<form method="post">
+  <input type="hidden" name="action" value="convert_html">
+  <button type="submit">HTML化</button>
+</form>
+{% endif %}
+<div id="review-section" style="display:{% if blog_review or rev_blog_post %}block{% else %}none{% endif %};">
+  <form id="review-form">
+    <button type="submit">生成されたブログをAIで評価</button>
+  </form>
+  <pre id="review-stream" class="stream-box"></pre>
+  <div id="review-preview" class="markdown-preview">{% if blog_review_html %}{{ blog_review_html|safe }}{% endif %}</div>
+  <p id="review-download">{% if review_file %}<a href="{{ url_for('static', filename='blogs/' + review_file) }}" download>Markdownダウンロード</a>{% endif %}</p>
+</div>
+<div id="revise-section" style="display:{% if rev_blog_post %}block{% else %}none{% endif %};">
+  <form id="revise-form">
+    <button type="submit">ブログ修正版を作成</button>
+  </form>
+  <pre id="revise-stream" class="stream-box"></pre>
+  <div id="revise-preview" class="markdown-preview">{% if rev_blog_html %}{{ rev_blog_html|safe }}{% endif %}</div>
+  <p id="revise-download">{% if rev_blog_file %}<a href="{{ url_for('static', filename='blogs/' + rev_blog_file) }}" download>Markdownダウンロード</a>{% endif %}</p>
+</div>
+{% endif %}
+{% if info_blog_post %}
+<h2>情報提供ブログ記事</h2>
+{% if info_html_mode %}
+<div class="html-preview"><iframe class="html-frame" srcdoc="{{ info_blog_html|replace('"','&quot;')|safe }}"></iframe></div>
+{% if info_blog_file %}<p><a href="{{ url_for('static', filename='blogs/' + info_blog_file) }}" download>HTMLダウンロード</a></p>{% endif %}
+{% else %}
+<div class="markdown-preview">{{ info_blog_html|safe }}</div>
+<details><summary>Markdownを表示</summary><pre>{{ info_blog_post }}</pre></details>
+{% if info_blog_file %}<p><a href="{{ url_for('static', filename='blogs/' + info_blog_file) }}" download>Markdownダウンロード</a></p>{% endif %}
+{% endif %}
+{% endif %}
+{% endif %}
+
+{% if results and not instructions %}
+<form method="post" id="report-form">
+  <div class="form-group" style="margin-bottom:0.5em;">
+    <label for="report_prompt">追加指示</label>
+    <small class="help">まとめたい内容や検索ワードを選んだ理由を書くと精度が上がります。</small>
+    <textarea id="report_prompt" name="report_prompt" rows="3">{{ report_prompt }}</textarea>
+  </div>
+  <div class="form-group">
+    <label><input type="checkbox" name="hi_model" id="report_hi"> 高性能AIを使う</label>
+    <span class="warning" id="report_warn" style="display:none;">警告: 最大10分程度かかる場合があります。</span>
+  </div>
+  <button type="submit" name="action" value="report">レポート作成</button>
+</form>
+<pre id="report-stream" class="stream-box"></pre>
+<div id="report-preview" class="markdown-preview"></div>
+<p id="report-download"></p>
+{% endif %}
+<div id="blog-section" style="display:{% if instructions %}block{% else %}none{% endif %};">
+<form method="post" id="blog-form">
+  <div class="form-group" style="margin-bottom:0.5em;">
+    <label for="blog_prompt">追加指示</label>
+    <small class="help">まとめたい内容や検索ワードを選んだ理由を書くと精度が上がります。</small>
+    <textarea id="blog_prompt" name="blog_prompt" rows="3">{{ blog_prompt }}</textarea>
+  </div>
+  <div class="form-group">
+    <label for="blog_style">ブログの雰囲気</label>
+    <select id="blog_style" name="blog_style">
+      {% for s in ['標準','ビジネス','カジュアル','フレンドリー','フォーマル'] %}
+        <option value="{{ s }}" {% if blog_style == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label><input type="checkbox" name="human_mode" {% if human_mode %}checked{% endif %}> 人間風ブログ記事モード</label>
+  </div>
+  <div class="form-group">
+    <label><input type="checkbox" name="hi_model" id="blog_hi"> 高性能AIを使う</label>
+    <span class="warning" id="blog_warn" style="display:none;">警告: 最大10分程度かかる場合があります。</span>
+  </div>
+  <button type="submit" name="action" value="blog">ブログ作成</button>
+  <button type="submit" name="action" value="blog_info">情報提供ブログ作成</button>
+</form>
+<pre id="blog-stream" class="stream-box"></pre>
+<div id="blog-preview"></div>
+<p id="blog-download"></p>
+</div>
+<h2>スクレイピング履歴</h2>
+<ul>
+{% for f in scrape_history %}
+  <li><a href="{{ url_for('static', filename='scrapes/' + f) }}" download>{{ f }}</a></li>
+{% else %}
+  <li>履歴がありません</li>
+{% endfor %}
+</ul>
+<h2>レポート履歴</h2>
+<ul>
+{% for f in report_history %}
+  <li><a href="{{ url_for('static', filename='reports/' + f) }}" download>{{ f }}</a></li>
+{% else %}
+  <li>履歴がありません</li>
+{% endfor %}
+</ul>
+<h2>ブログ履歴</h2>
+<ul>
+{% for f in blog_history %}
+  <li><a href="{{ url_for('static', filename='blogs/' + f) }}" download>{{ f }}</a></li>
+{% else %}
+  <li>履歴がありません</li>
+{% endfor %}
+</ul>
+{% endif %}

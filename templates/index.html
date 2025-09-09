@@ -2,86 +2,226 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>SEO Scraper</title>
+  <title>SEOスクレイパー</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <div class="container">
-    <h1>SEO Scraper</h1>
-    <form method="post">
-      <div class="form-group">
-        <label for="keyword">Keyword</label>
-        <input type="text" id="keyword" name="keyword" value="{{ form.keyword if form else '' }}">
+    <h1>SEOスクレイパー</h1>
+    <pre id="analysis-log" class="stream-box"></pre>
+    <div id="results-container">
+    {% if results %}{% include 'results.html' %}{% endif %}
+    </div>
+
+    <form method="post" id="scrape-form">
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="keyword">キーワード</label>
+          <div style="display:flex; gap:0.5em;">
+            <textarea id="keyword" name="keyword" rows="5" placeholder="キーワードを改行で複数指定" style="flex:1; white-space:pre-wrap;">{{ form.keyword if form else '' }}</textarea>
+            <button type="submit" name="action" value="expand" class="expand-btn">類似キーワード追加</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="num_results">取得件数</label>
+          <input type="number" id="num_results" name="num_results" max="50" value="{{ form.num_results if form else 10 }}">
+        </div>
+        <div class="form-group">
+          <label for="delay">リクエスト間隔(秒)</label>
+          <input type="number" step="0.1" id="delay" name="delay" value="{{ form.delay if form else 0.0 }}">
+        </div>
+        <div class="form-group">
+          <label for="workers">同時リクエスト数</label>
+          <input type="number" id="workers" name="workers" value="{{ form.workers if form else cpu_count }}">
+        </div>
+        <div class="form-group">
+          <label for="analyze_chars">分析文字数</label>
+          <input type="number" id="analyze_chars" name="analyze_chars" value="{{ form.analyze_chars if form else 5000 }}">
+        </div>
+        <div class="form-group">
+          <label for="rank_k">ランキング上位件数</label>
+          <input type="number" id="rank_k" name="rank_k" value="{{ form.rank_k if form else 15 }}">
+        </div>
+        <div class="form-group">
+          <label for="merge_percent">類似キーワード統合 (%)</label>
+          <input type="number" step="0.1" id="merge_percent" name="merge_percent" value="{{ form.merge_percent if form else 18 }}">
+        </div>
+        <div class="form-group">
+          <label for="max_common_ratio">共通サブ文字列の最大出現率</label>
+          <input type="number" step="0.1" id="max_common_ratio" name="max_common_ratio" value="{{ form.max_common_ratio if form else 0.8 }}">
+        </div>
+        <div class="form-group">
+          <label for="analysis_mode">解析モード</label>
+          <select id="analysis_mode" name="analysis_mode">
+            {% for m in ['tiktoken','char','hybrid'] %}
+              <option value="{{ m }}" {% if form and form.analysis_mode == m %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" name="skip_common" {% if form and form.get('skip_common') %}checked{% endif %}> 本文一致率判定を行わない</label>
+        </div>
+        <div class="form-group" style="flex: 1 1 100%;">
+          <label for="exclude_patterns">除外パターン（1行につき1つ、/regex/可）</label>
+          <textarea id="exclude_patterns" name="exclude_patterns" rows="4">{{ form.exclude_patterns if form else '' }}</textarea>
+        </div>
       </div>
-      <div class="form-group">
-        <label for="num_results">Number of results</label>
-        <input type="number" id="num_results" name="num_results" value="{{ form.num_results if form else 10 }}">
-      </div>
-      <div class="form-group">
-        <label for="delay">Delay between requests (sec)</label>
-        <input type="number" step="0.1" id="delay" name="delay" value="{{ form.delay if form else 0.1 }}">
-      </div>
-      <div class="form-group">
-        <label for="workers">Workers</label>
-        <input type="number" id="workers" name="workers" value="{{ form.workers if form else 10 }}">
-      </div>
-      <div class="form-group">
-        <label for="analyze_chars">Analyze characters</label>
-        <input type="number" id="analyze_chars" name="analyze_chars" value="{{ form.analyze_chars if form else 5000 }}">
-      </div>
-      <div class="form-group">
-        <label for="rank_k">Top K</label>
-        <input type="number" id="rank_k" name="rank_k" value="{{ form.rank_k if form else 15 }}">
-      </div>
-      <div class="form-group">
-        <label for="max_common_ratio">Max common substring ratio</label>
-        <input type="number" step="0.1" id="max_common_ratio" name="max_common_ratio" value="{{ form.max_common_ratio if form else 0.8 }}">
-      </div>
-      <div class="form-group">
-        <label for="analysis_mode">Analysis mode</label>
-        <select id="analysis_mode" name="analysis_mode">
-          {% for m in ['tiktoken','char','hybrid'] %}
-            <option value="{{ m }}" {% if form and form.analysis_mode == m %}selected{% endif %}>{{ m }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="exclude_patterns">Exclude patterns (one per line, /regex/ allowed)</label>
-        <textarea id="exclude_patterns" name="exclude_patterns" rows="4">{{ form.exclude_patterns if form else '' }}</textarea>
-      </div>
-      <button type="submit">Run</button>
+      <button type="submit" name="action" value="scrape">実行</button>
     </form>
-
-    {% if results %}
-    <h2>Results</h2>
-    <table>
-      <tr><th>URL</th><th>Domain</th><th>Published Time</th><th>Title</th><th>Robots</th><th>Text</th></tr>
-      {% for r in results %}
-      <tr>
-        <td><a href="{{ r.url }}" target="_blank">{{ r.url }}</a></td>
-        <td>{{ r.domain }}</td>
-        <td>{{ r.published_time }}</td>
-        <td>{{ r.title }}</td>
-        <td>{{ 'Yes' if r.robots else 'No' }}</td>
-        <td>{{ r.text }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-
-    <h2>Common substrings</h2>
-    <ul>
-      {% for item in common_subs %}
-        <li>{{ item.count }} docs ({{ (item.ratio * 100)|round(1) }}%): {{ item.text }}</li>
-      {% endfor %}
-    </ul>
-
-    <h2>Common SEO title substrings</h2>
-    <ul>
-      {% for title, cnt in title_ranks %}
-        <li>{{ cnt }} docs: {{ title }}</li>
-      {% endfor %}
-    </ul>
-    {% endif %}
   </div>
+  <script>
+  let currentSession = null;
+  function attachStream(formId, url, streamId, previewId, downloadId, extraParamsFn){
+    const form = document.getElementById(formId);
+    if(!form) return;
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      const params = new URLSearchParams(new FormData(form, e.submitter));
+      if(extraParamsFn){ extraParamsFn(params); }
+      const streamEl = document.getElementById(streamId);
+      const previewEl = document.getElementById(previewId);
+      const dlEl = document.getElementById(downloadId);
+      streamEl.textContent = '';
+      if(previewEl){ previewEl.innerHTML = ''; previewEl.className = ''; }
+      if(dlEl) dlEl.innerHTML = '';
+      const src = new EventSource(url + '?' + params.toString());
+      src.onmessage = function(ev){
+        const data = JSON.parse(ev.data);
+        if(data.token){
+          streamEl.textContent += data.token;
+        } else if(data.status){
+          streamEl.textContent += data.status + '\n';
+        } else if(data.error){
+          streamEl.textContent += 'Error: ' + data.error + '\n';
+          src.close();
+        } else if(data.done){
+          if(previewEl && data.html){
+            if(data.html_mode){
+              previewEl.className = 'html-preview';
+              previewEl.innerHTML = '';
+              const iframe = document.createElement('iframe');
+              iframe.className = 'html-frame';
+              iframe.srcdoc = data.html;
+              previewEl.appendChild(iframe);
+            } else {
+              previewEl.className = 'markdown-preview';
+              previewEl.innerHTML = data.html;
+            }
+          }
+          if(dlEl && data.file){
+            const kind = formId === 'report-form' ? 'reports' : 'blogs';
+            const label = formId === 'report-form' ? 'レポートダウンロード' : (data.html_mode ? 'HTMLダウンロード' : 'Markdownダウンロード');
+            dlEl.innerHTML = `<a href="/static/${kind}/${data.file}" download>${label}</a>`;
+          }
+          if(formId === 'report-form'){
+            const blogSec = document.getElementById('blog-section');
+            if(blogSec) blogSec.style.display = 'block';
+          } else if(formId === 'blog-form'){
+            const reviewSec = document.getElementById('review-section');
+            if(reviewSec) reviewSec.style.display = 'block';
+          } else if(formId === 'review-form'){
+            const revSec = document.getElementById('revise-section');
+            if(revSec) revSec.style.display = 'block';
+          }
+          src.close();
+        }
+      };
+      src.onerror = function(){
+        streamEl.textContent += 'Error: connection failed\n';
+        src.close();
+      };
+    });
+  }
+  function attachLogStream(formId, url, logId, resultId){
+    const form=document.getElementById(formId);
+    if(!form) return;
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      const params=new URLSearchParams(new FormData(form, e.submitter));
+      const logEl=document.getElementById(logId);
+      const resEl=document.getElementById(resultId);
+      const action=params.get('action');
+      if(action==='expand'){
+        fetch('/expand_keywords',{
+          method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded'},
+          body:params.toString()
+        }).then(r=>r.json()).then(data=>{
+          document.getElementById('keyword').value=data.keyword;
+          if(logEl) logEl.textContent=(data.logs||[]).join('\n');
+        }).catch(err=>{
+          if(logEl) logEl.textContent='Error: '+err+'\n';
+        });
+        return;
+      }
+      logEl.textContent='';
+      const src=new EventSource(url + '?' + params.toString());
+      src.onmessage=function(ev){
+        const data=JSON.parse(ev.data);
+        if(data.log){
+          logEl.textContent+=data.log+'\n';
+        }else if(data.done){
+          resEl.innerHTML=data.html;
+          currentSession = data.session || null;
+          src.close();
+          attachStream('report-form','/stream_report','report-stream','report-preview','report-download', p=>{
+            if(currentSession) p.set('session', currentSession);
+            p.set('hi', document.getElementById('report_hi').checked ? '1':'0');
+          });
+          attachStream('blog-form','/stream_blog','blog-stream','blog-preview','blog-download', p=>{
+            if(currentSession) p.set('session', currentSession);
+            p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
+            p.set('human', document.querySelector('#blog-form input[name="human_mode"]').checked ? '1':'0');
+            p.set('style', document.getElementById('blog_style').value);
+            if(p.get('action')==='blog_info'){p.set('info','1');}
+            p.delete('action');
+          });
+          attachStream('review-form','/stream_review','review-stream','review-preview','review-download', p=>{
+            if(currentSession) p.set('session', currentSession);
+            p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
+          });
+          attachStream('revise-form','/stream_revise','revise-stream','revise-preview','revise-download', p=>{
+            if(currentSession) p.set('session', currentSession);
+            p.set('hi', document.getElementById('blog_hi').checked ? '1':'0');
+          });
+        }else if(data.error){
+          logEl.textContent+='Error: '+data.error+'\n';
+          src.close();
+        }
+      };
+      src.onerror=function(){
+        logEl.textContent+='Error: connection failed\n';
+        src.close();
+      };
+    });
+  }
+  attachLogStream('scrape-form','/stream_analysis','analysis-log','results-container');
+  attachStream('report-form','/stream_report','report-stream','report-preview','report-download', p=>{
+    if(currentSession) p.set('session', currentSession);
+    p.set('hi', document.getElementById('report_hi')?.checked ? '1':'0');
+  });
+  attachStream('blog-form','/stream_blog','blog-stream','blog-preview','blog-download', p=>{
+    if(currentSession) p.set('session', currentSession);
+    p.set('hi', document.getElementById('blog_hi')?.checked ? '1':'0');
+    p.set('human', document.querySelector('#blog-form input[name="human_mode"]')?.checked ? '1':'0');
+    p.set('style', document.getElementById('blog_style')?.value);
+    if (p.get('action') === 'blog_info') {
+      p.set('info','1');
+    }
+    p.delete('action');
+  });
+  attachStream('review-form','/stream_review','review-stream','review-preview','review-download', p=>{
+    if(currentSession) p.set('session', currentSession);
+    p.set('hi', document.getElementById('blog_hi')?.checked ? '1':'0');
+  });
+  attachStream('revise-form','/stream_revise','revise-stream','revise-preview','revise-download', p=>{
+    if(currentSession) p.set('session', currentSession);
+    p.set('hi', document.getElementById('blog_hi')?.checked ? '1':'0');
+  });
+  function warnToggle(boxId, warnId){
+    const box=document.getElementById(boxId);const warn=document.getElementById(warnId);if(box&&warn){box.addEventListener('change',()=>{warn.style.display=box.checked?'inline':'none';});}}
+  warnToggle('report_hi','report_warn');
+  warnToggle('blog_hi','blog_warn');
+  </script>
 </body>
 </html>

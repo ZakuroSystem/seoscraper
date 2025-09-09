@@ -3,10 +3,12 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 from typing import List, Optional, Tuple, Dict, Set, Iterable
-from collections import defaultdict
+from collections import defaultdict, Counter
 import re
 import json
 import csv
+import os
+from functools import lru_cache
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -18,6 +20,16 @@ from urllib3.util.retry import Retry
 from googlesearch import search
 import tldextract
 import tiktoken
+from janome.tokenizer import Tokenizer
+import markdown
+
+from prompts import (
+    build_instruction_messages,
+    build_blog_messages,
+    build_html_messages,
+)
+
+OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
 
 
 # =========================
@@ -59,14 +71,25 @@ def create_session() -> requests.Session:
 
 
 def get_search_results(query: str, num_results: int, pause: float) -> List[str]:
-    """Return a list of URLs from Google search."""
-    try:
-        urls = list(search(query, num_results=num_results, sleep_interval=pause))
-        logging.info("Search ok: %s (hits=%d)", query, len(urls))
-        return urls
-    except Exception as e:
-        logging.error("Search failed: %s", e)
-        return []
+    """Return a list of URLs from Google search for each line in ``query``."""
+    num_results = min(num_results, 50)
+    urls: List[str] = []
+    keywords = [q.strip() for q in query.splitlines() if q.strip()]
+
+    def fetch(q: str) -> List[str]:
+        try:
+            res = list(search(q, num_results=num_results, sleep_interval=pause))
+            logging.info("Search ok: %s (hits=%d)", q, len(res))
+            return res
+        except Exception as e:
+            logging.error("Search failed (%s): %s", q, e)
+            return []
+
+    max_workers = min(len(keywords), os.cpu_count() or 4) or 1
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for res in ex.map(fetch, keywords):
+            urls.extend(res)
+    return urls
 
 
 # =========================
@@ -184,6 +207,12 @@ def parse_html(html: str) -> dict:
     text = ' '.join(p.get_text(separator=' ', strip=True) for p in soup.find_all('p'))
     published_time = None
     seo_title = None
+    headings = []
+    for level in range(1, 7):
+        for h in soup.find_all(f'h{level}'):
+            content = h.get_text(strip=True)
+            if content:
+                headings.append(content)
 
     time_selectors = [
         ('meta', {'property': 'article:published_time'}),
@@ -219,11 +248,36 @@ def parse_html(html: str) -> dict:
     if not seo_title:
         seo_title = 'N/A'
 
-    logging.debug("Parsed title=%s published=%s", seo_title, published_time)
+    desc_selectors = [
+        ('meta', {'name': 'description'}),
+        ('meta', {'property': 'og:description'}),
+        ('meta', {'name': 'twitter:description'}),
+    ]
+    description = ''
+    for tag, attrs in desc_selectors:
+        el = soup.find(tag, attrs=attrs)
+        if el and el.get('content'):
+            description = el['content']
+            break
+    image_count = len(soup.find_all('img'))
+    link_count = len(soup.find_all('a'))
+
+    logging.debug(
+        "Parsed title=%s published=%s desc_len=%d images=%d links=%d",
+        seo_title,
+        published_time,
+        len(description),
+        image_count,
+        link_count,
+    )
     return {
         'text': text,
         'published_time': published_time,
-        'title': seo_title
+        'title': seo_title,
+        'description': description,
+        'images': image_count,
+        'links': link_count,
+        'headings': headings,
     }
 
 
@@ -231,6 +285,99 @@ def extract_domain(url: str) -> str:
     ext = tldextract.extract(url)
     return '.'.join(part for part in [ext.domain, ext.suffix] if part)
 
+
+# =========================
+# テキスト解析：語数・キーワード頻度
+# =========================
+def _insertion_cost(n: int) -> float:
+    if n == 1:
+        return 1.0
+    if n == 2:
+        return 1.5
+    return 3.0
+
+
+def _edit_distance(a: str, b: str) -> float:
+    la, lb = len(a), len(b)
+    dp = [[(0.0, 0) for _ in range(lb + 1)] for _ in range(la + 1)]
+    for i in range(1, la + 1):
+        cost, ins = dp[i - 1][0]
+        dp[i][0] = (cost + 2.0, ins)
+    for j in range(1, lb + 1):
+        cost, ins = dp[0][j - 1]
+        new_ins = ins + 1
+        dp[0][j] = (cost + _insertion_cost(new_ins), new_ins)
+    for i in range(1, la + 1):
+        for j in range(1, lb + 1):
+            # deletion
+            del_cost, del_ins = dp[i - 1][j]
+            del_cost += 2.0
+            # insertion
+            ins_cost, ins_ins = dp[i][j - 1]
+            new_ins = ins_ins + 1
+            ins_cost += _insertion_cost(new_ins)
+            ins_ins = new_ins
+            # substitution / match
+            sub_cost, sub_ins = dp[i - 1][j - 1]
+            if a[i - 1] != b[j - 1]:
+                sub_cost += 3.0
+            candidates = [
+                (del_cost, del_ins),
+                (ins_cost, ins_ins),
+                (sub_cost, sub_ins),
+            ]
+            dp[i][j] = min(candidates, key=lambda x: x[0])
+    return dp[la][lb][0]
+
+
+def _merge_similar(counter: Counter, threshold: float) -> Counter:
+    merged: Dict[str, int] = {}
+    for token, cnt in sorted(counter.items(), key=lambda x: -x[1]):
+        for canon in list(merged.keys()):
+            dist = _edit_distance(token, canon)
+            norm = max(len(token), len(canon)) * 1.5
+            if dist / norm <= threshold:
+                target = token if len(token) > len(canon) else canon
+                merged[target] = merged.pop(canon) + cnt
+                break
+        else:
+            merged[token] = cnt
+    return Counter(merged)
+
+
+def analyze_keywords(text: str, top_n: int = 10, merge_threshold: float = 0.0) -> Tuple[int, List[Dict[str, int]]]:
+    local = analyze_keywords._local
+    tokenizer = getattr(local, "tokenizer", None)
+    if tokenizer is None:
+        tokenizer = Tokenizer()
+        local.tokenizer = tokenizer
+    counter: Counter = Counter()
+    # Janome's tokenizer and underlying FST are not thread‑safe, so guard usage
+    # with a global lock. If a KeyError bubbles up from the dictionary cache,
+    # recreate the tokenizer and retry once to avoid crashing the worker.
+    with analyze_keywords._lock:
+        try:
+            tokens = list(tokenizer.tokenize(text))
+        except KeyError:
+            tokenizer = Tokenizer()
+            local.tokenizer = tokenizer
+            tokens = list(tokenizer.tokenize(text))
+    for t in tokens:
+        pos = t.part_of_speech.split(',')[0]
+        base = t.base_form if t.base_form != '*' else t.surface
+        if pos == '名詞' and base not in analyze_keywords._stopwords and len(base) > 1:
+            counter[base] += 1
+    if merge_threshold > 0:
+        counter = _merge_similar(counter, merge_threshold)
+    total = sum(counter.values())
+    top = [{"keyword": k, "count": c} for k, c in counter.most_common(top_n)]
+    return total, top
+
+analyze_keywords._local = threading.local()
+analyze_keywords._lock = threading.Lock()
+analyze_keywords._stopwords = {
+    'する', 'ます', 'ある', 'いる', 'なる', 'こと', 'これ', 'それ', 'さん'
+}
 
 # =========================
 # 除外定義（文字/正規表現）の読み込み
@@ -594,16 +741,312 @@ def rank_common_titles(
     )
 
 
+
+# =========================
+# AIによるブログ指示書生成 (Ollama)
+# =========================
+
+
+@lru_cache()
+def have_ollama_model(name: str) -> bool:
+    """Return True if the given Ollama model exists locally."""
+    try:
+        import requests
+
+        resp = requests.get(f"{OLLAMA_API_BASE}/api/tags", timeout=5)
+        data = resp.json()
+        return any(m.get("name") == name for m in data.get("models", []))
+    except Exception as e:  # pragma: no cover - optional runtime feature
+        logging.info("Ollama model check failed: %s", e)
+        return False
+
+
+def ollama_chat(
+    model: str,
+    messages: List[Dict[str, str]],
+    timeout: int = 160,
+    web_search: bool = False,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Send a chat request to the Ollama server and return the response text.
+
+    Before the main request, a small "Hello" handshake is performed (60s timeout)
+    to ensure the backend model is responsive. Returns a tuple of
+    (content, error_message). On success, error_message is None.
+    """
+    try:
+        import json
+        import requests
+
+        # handshake
+        web_flag = web_search or os.environ.get("OLLAMA_WEB_SEARCH") == "1"
+        hello_payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        if web_flag:
+            hello_payload["web_search"] = True
+        hello_resp = requests.post(
+            f"{OLLAMA_API_BASE}/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(hello_payload),
+            timeout=60,
+        )
+        hello_data = hello_resp.json()
+        if hello_resp.status_code != 200 or "error" in hello_data:
+            raise RuntimeError(hello_data.get("error", hello_resp.text))
+
+        payload = {"model": model, "messages": messages}
+        if web_flag:
+            payload["web_search"] = True
+        resp = requests.post(
+            f"{OLLAMA_API_BASE}/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(payload),
+            timeout=timeout,
+        )
+        data = resp.json()
+        if resp.status_code != 200 or "error" in data:
+            raise RuntimeError(data.get("error", resp.text))
+        choices = data.get("choices", [])
+        if not choices:
+            raise RuntimeError("no choices in response")
+        content = choices[0].get("message", {}).get("content", "").strip()
+        return content, None
+    except Exception as e:
+        logging.info("Ollama chat failed: %s", e)
+        return None, str(e)
+
+
+def generate_blog_instruction(
+    keyword: str,
+    results: List[Dict],
+    common_subs: List[Dict],
+    title_ranks: List[Tuple[str, int]],
+    user_prompt: str = "",
+    info_only: bool = False,
+    model: str = "gpt-oss:20b",
+    timeout: int = 160,
+    web_search: bool = False,
+) -> Tuple[Optional[str], Optional[str]]:
+    """検索結果の概要から SEO ブログ記事の指示書を生成する。"""
+    if not have_ollama_model(model):
+        msg = f"{model} not available"
+        logging.info(msg)
+        return None, msg
+    messages = build_instruction_messages(
+        keyword,
+        results,
+        common_subs,
+        title_ranks,
+        user_prompt=user_prompt,
+        info_only=info_only,
+    )
+    return ollama_chat(model, messages, timeout=timeout, web_search=web_search)
+
+
+def generate_blog_post(
+    keyword: str,
+    instructions: str,
+    user_prompt: str = "",
+    style: str = "",
+    human_mode: bool = False,
+    info_only: bool = False,
+    html_mode: bool = False,
+    model: str = "gpt-oss:20b",
+    timeout: int = 160,
+    web_search: bool = False,
+) -> Tuple[Optional[str], Optional[str]]:
+    """ブログ指示書から記事本文を生成する。"""
+    if not have_ollama_model(model):
+        msg = f"{model} not available"
+        logging.info(msg)
+        return None, msg
+    messages = build_blog_messages(
+        keyword,
+        instructions,
+        user_prompt=user_prompt,
+        style=style,
+        human_mode=human_mode,
+        info_only=info_only,
+        html_mode=html_mode,
+    )
+    return ollama_chat(model, messages, timeout=timeout, web_search=web_search)
+
+
+def generate_similar_keywords(
+    keyword: str,
+    count: int = 10,
+    model: str = "gpt-oss:20b",
+    timeout: int = 120,
+) -> Tuple[List[str], Optional[str]]:
+    """Given a keyword, generate related keywords using Ollama.
+
+    Returns a tuple of (keywords, error message). On success, the error
+    is None. If the model is unavailable or the response is empty,
+    returns an empty list and an error string.
+    """
+    if not have_ollama_model(model):
+        msg = f"{model} not available"
+        logging.info(msg)
+        return [], msg
+    prompt = (
+        f"{keyword}に関連する検索キーワードを{count}個、日本語で列挙してください。\n"
+        "余計な説明や番号は不要です。キーワードのみを1行ずつ出力してください。"
+    )
+    messages = [
+        {"role": "system", "content": "You are an SEO assistant. Output keywords only."},
+        {"role": "user", "content": prompt},
+    ]
+    content, err = ollama_chat(model, messages, timeout=timeout)
+    if err or not content:
+        return [], err or "empty response"
+    kws = [line.strip() for line in content.splitlines() if line.strip()]
+    return kws[:count], None
+
+
+def ollama_chat_stream(
+    model: str,
+    messages: List[Dict[str, str]],
+    timeout: int = 160,
+    web_search: bool = False,
+):
+    """Yield content chunks from Ollama as they arrive."""
+    import json
+    import requests
+
+    # handshake
+    web_flag = web_search or os.environ.get("OLLAMA_WEB_SEARCH") == "1"
+    hello_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+    if web_flag:
+        hello_payload["web_search"] = True
+    requests.post(
+        f"{OLLAMA_API_BASE}/v1/chat/completions",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(hello_payload),
+        timeout=60,
+    )
+
+    payload = {"model": model, "messages": messages, "stream": True}
+    if web_flag:
+        payload["web_search"] = True
+    with requests.post(
+        f"{OLLAMA_API_BASE}/v1/chat/completions",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+        timeout=timeout,
+        stream=True,
+    ) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            if line.startswith(b"data: "):
+                payload = line[6:]
+                if payload.strip() == b"[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    logging.info("Bad stream line: %r", line)
+                    continue
+                choices = data.get("choices", [])
+                if choices:
+                    delta = choices[0].get("delta", {}).get("content", "")
+                    if delta:
+                        yield delta
+
+def save_markdown(content: str, keyword: str, directory: str = ".", ext: str = "md") -> str:
+    """テキストファイルを保存し、保存先パスを返す。"""
+    os.makedirs(directory, exist_ok=True)
+    safe_kw = re.sub(r"[^0-9A-Za-z_-]+", "_", keyword)[:30]
+    filename = f"{safe_kw}_{int(time.time())}.{ext}"
+    path = os.path.join(directory, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    logging.info("file saved: %s", path)
+    return path
+
+
+def save_blog_markdown(content: str, keyword: str, directory: str = ".", html: bool = False) -> str:
+    """ブログ記事をファイルとして保存し、パスを返す。"""
+    ext = "html" if html else "md"
+    return save_markdown(content, keyword, directory, ext=ext)
+
+
+def markdown_to_html(md: str) -> str:
+    """Markdownテキストをスタイル付きHTMLに変換する。"""
+    body = markdown.markdown(md, extensions=["extra"])
+    style = (
+        "<style>"
+        "body{font-family:'Helvetica Neue',sans-serif;line-height:1.8;margin:20px;color:#333;}"
+        "h1,h2,h3{color:#2c3e50;}"
+        "a{color:#1e88e5;}"
+        "table{border-collapse:collapse;}"
+        "table,th,td{border:1px solid #ccc;padding:8px;}"
+        "code{background:#f5f5f5;padding:2px 4px;border-radius:4px;}"
+        "</style>"
+    )
+    return f"<!DOCTYPE html><html><head><meta charset='utf-8'>{style}</head><body>{body}</body></html>"
+
+
+def markdown_to_html_ai(md: str, model: str = "gpt-oss:20b", timeout: int = 120) -> Tuple[Optional[str], Optional[str]]:
+    """MarkdownテキストをAIに渡して装飾付きHTMLへ変換する。"""
+    if not have_ollama_model(model):
+        msg = f"{model} not available"
+        logging.info(msg)
+        return None, msg
+    messages = build_html_messages(md)
+    return ollama_chat(model, messages, timeout=timeout)
+
+
+def save_report_markdown(content: str, keyword: str, directory: str = ".") -> str:
+    """レポートをMarkdownファイルとして保存し、パスを返す。"""
+    return save_markdown(content, keyword, directory, ext="md")
+
+
+def save_scrape_json(results: List[Dict], keyword: str, directory: str = ".") -> str:
+    """スクレイピング結果をJSONとして保存し、保存先パスを返す。"""
+    os.makedirs(directory, exist_ok=True)
+    safe_kw = re.sub(r"[^0-9A-Za-z_-]+", "_", keyword)[:30]
+    filename = f"{safe_kw}_{int(time.time())}.json"
+    path = os.path.join(directory, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    logging.info("Scrape JSON saved: %s", path)
+    return path
+
+
 # =========================
 # 結果・分析ファイルの書き出し／読み込み
 # =========================
 def write_results_csv(path: str, rows: List[Dict]):
-    fieldnames = ["url", "domain", "published_time", "title", "robots", "text"]
+    fieldnames = [
+        "url",
+        "domain",
+        "published_time",
+        "title",
+        "description",
+        "robots",
+        "word_count",
+        "top_keywords",
+        "images",
+        "links",
+        "headings",
+        "text",
+    ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in rows:
-            writer.writerow(r)
+            r_copy = r.copy()
+            if isinstance(r_copy.get("top_keywords"), list):
+                r_copy["top_keywords"] = ";".join(f"{k['keyword']}:{k['count']}" for k in r_copy['top_keywords'])
+            if isinstance(r_copy.get("headings"), list):
+                r_copy["headings"] = ";".join(r_copy["headings"])
+            writer.writerow(r_copy)
     logging.info("Results CSV written: %s", path)
 
 
@@ -654,9 +1097,13 @@ def main():
     parser = argparse.ArgumentParser(description='ウェブを検索し情報を抽出するツール')
     parser.add_argument('keyword', nargs='?', help='検索キーワード（--analysis-load を使う場合は省略可）')
     parser.add_argument('-n', '--num-results', type=int, default=10, help='取得するURLの件数')
-    parser.add_argument('--delay', type=float, default=0.1, help='各リクエスト前の待機秒数(デフォルト0.1)')
-    parser.add_argument('--workers', type=int, default=10, help='同時リクエスト数')
+    parser.add_argument('--delay', type=float, default=0.0, help='各リクエスト前の待機秒数')
+    parser.add_argument('--workers', type=int, default=os.cpu_count() or 4, help='同時リクエスト数')
     parser.add_argument('--chars', type=int, default=1000, help='本文の表示文字数')
+    parser.add_argument('--merge-percent', type=float, default=18.0,
+                        help='類似キーワードを統合する最大編集距離(%)')
+    parser.add_argument('--expand-keywords', action='store_true',
+                        help='gpt-oss:20bで各キーワードに類似語を10件ずつ追加して検索に含める')
     # ログ
     parser.add_argument('--log-file', default=None, help='ログ出力先ファイル（指定しない場合はコンソールのみ）')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'], help='ログレベル')
@@ -665,6 +1112,7 @@ def main():
     # 出力
     parser.add_argument('--results-csv', default=None, help='結果CSVのパス')
     parser.add_argument('--results-json', default=None, help='結果JSONのパス')
+    parser.add_argument('--show-pages', action='store_true', help='ページ別の生データを表示する')
     # 共通判定パラメータ
     parser.add_argument('--rank-k', type=int, default=15, help='ランキングの表示件数（共通本文サブ文字列 / 共通SEOタイトルサブ文字列）')
     parser.add_argument('--analyze-chars', type=int, default=5000, help='共通判定に用いる本文の先頭文字数（デフォルト5000）')
@@ -759,6 +1207,7 @@ def main():
                 "analyze_chars": saved_meta.get("analyze_chars"),
                 "max_common_ratio": args.max_common_ratio,
                 "analysis_mode": args.analysis_mode,
+                "merge_percent": args.merge_percent,
                 "exclude_chars_count": len(saved_excl),
                 "exclude_regex": saved_regex,
                 "exclude_regex_count": len(saved_regex),
@@ -767,15 +1216,21 @@ def main():
             }
             write_results_json(args.results_json, results, meta)
 
-        # 従来の出力
-        for item in results:
-            print("URL:", item['url'])
-            print("ドメイン:", item['domain'])
-            print("公開日:　", item['published_time'])
-            print("SEOタイトル:", item['title'])
-            print("robots.txt:　", "あり" if item['robots'] else "なし")
-            print("本文:　", item['text'])
-            print("-" * 80)
+        # 従来の出力（--show-pages 指定時のみ）
+        if args.show_pages:
+            for item in results:
+                print("URL:", item['url'])
+                print("ドメイン:", item['domain'])
+                print("公開日:　", item['published_time'])
+                print("SEOタイトル:", item['title'])
+                print("説明:", item.get('description', ''))
+                print("robots.txt:　", "あり" if item['robots'] else "なし")
+                print("語数:", item['word_count'])
+                print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
+                print("画像数:", item.get('images'))
+                print("リンク数:", item.get('links'))
+                print("本文:　", item['text'])
+                print("-" * 80)
 
         unit = "文字" if args.analysis_mode == 'char' else "トークン"
         enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
@@ -797,6 +1252,27 @@ def main():
         else:
             print("（該当なし）")
 
+        instructions, err = generate_blog_instruction(
+            saved_meta.get("keyword", args.keyword or ""), results, common_subs, title_ranks
+        )
+        if instructions:
+            print("=== ブログ作成指示書 ===")
+            print(instructions)
+            blog_post, err2 = generate_blog_post(
+                saved_meta.get("keyword", args.keyword or ""), instructions
+            )
+            if blog_post:
+                print("=== 生成ブログ記事 ===")
+                print(blog_post)
+                path = save_blog_markdown(
+                    blog_post, saved_meta.get("keyword", args.keyword or ""),
+                )
+                print(f"Markdownとして保存: {path}")
+            else:
+                logging.info("Blog generation failed: %s", err2)
+        else:
+            logging.info("Instruction generation failed: %s", err)
+
         logging.info("Finished (analysis-load mode). results=%d", len(results))
         return
 
@@ -813,9 +1289,26 @@ def main():
             len(exclude_regex),
         )
 
+    if args.expand_keywords:
+        lines = [q.strip() for q in args.keyword.splitlines() if q.strip()]
+        added: List[str] = []
+        for q in lines:
+            extra, err = generate_similar_keywords(q)
+            if extra:
+                added.extend(extra)
+                logging.info("類似キーワードを追加 (%s): %s", q, ", ".join(extra))
+            else:
+                logging.info("類似キーワード生成失敗 (%s): %s", q, err)
+        if added:
+            if args.keyword and not args.keyword.endswith("\n"):
+                args.keyword += "\n"
+            args.keyword += "\n".join(added)
+
+    args.num_results = min(args.num_results, 50)
     logging.info('検索開始 keyword="%s" num=%d', args.keyword, args.num_results)
     urls = get_search_results(args.keyword, args.num_results, args.delay)
     session_factory = create_session
+    thread_local = threading.local()
     robots_cache: Dict[str, bool] = {}
     robots_lock = threading.Lock()
     results: List[Dict] = []
@@ -824,7 +1317,10 @@ def main():
     skipped_total = 0
 
     def process_url(target_url: str):
-        session = session_factory()
+        session = getattr(thread_local, "session", None)
+        if session is None:
+            session = session_factory()
+            thread_local.session = session
         domain = extract_domain(target_url)
         with robots_lock:
             robots = robots_cache.get(domain)
@@ -839,13 +1335,22 @@ def main():
         if not html:
             return None
         data = parse_html(html)
+        word_count, top_keywords = analyze_keywords(
+            data['text'], merge_threshold=args.merge_percent / 100.0
+        )
         row = {
             'url': target_url,
             'domain': domain,
             'published_time': data['published_time'],
             'title': data['title'],
+            'description': data['description'],
+            'word_count': word_count,
+            'top_keywords': top_keywords,
             'text': data['text'][:args.chars],
             'robots': robots,
+            'images': data['images'],
+            'links': data['links'],
+            'headings': data['headings'],
         }
         logging.info('OK %s | title="%s" robots=%s', target_url, data['title'], robots)
         return row, data['text'], data['title']
@@ -957,6 +1462,7 @@ def main():
                 "analyze_chars": args.analyze_chars,
                 "max_common_ratio": args.max_common_ratio,
                 "analysis_mode": args.analysis_mode,
+                "merge_percent": args.merge_percent,
                 "exclude_chars": sorted(list(exclude_chars)),
                 "exclude_chars_count": len(exclude_chars),
                 "exclude_regex": [p.pattern for p in exclude_regex],
@@ -974,21 +1480,28 @@ def main():
                 "analyze_chars": args.analyze_chars,
                 "max_common_ratio": args.max_common_ratio,
                 "analysis_mode": args.analysis_mode,
+                "merge_percent": args.merge_percent,
                 "exclude_chars": sorted(list(exclude_chars)),
                 "exclude_regex": [p.pattern for p in exclude_regex],
                 "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
             save_analysis(args.analysis_save, meta_for_analysis, norm_texts, norm_titles, results)
 
-        # ====== コンソール出力（従来の結果一覧） ======
-        for item in results:
-            print("URL:", item['url'])
-            print("ドメイン:", item['domain'])
-            print("公開日:　", item['published_time'])
-            print("SEOタイトル:", item['title'])
-            print("robots.txt:　", "あり" if item['robots'] else "なし")
-            print("本文:　", item['text'])
-            print("-" * 80)
+        # ====== コンソール出力（従来の結果一覧：--show-pages 指定時のみ） ======
+        if args.show_pages:
+            for item in results:
+                print("URL:", item['url'])
+                print("ドメイン:", item['domain'])
+                print("公開日:　", item['published_time'])
+                print("SEOタイトル:", item['title'])
+                print("説明:", item.get('description', ''))
+                print("robots.txt:　", "あり" if item['robots'] else "なし")
+                print("語数:", item['word_count'])
+                print("上位キーワード:", ', '.join(f"{k['keyword']}:{k['count']}" for k in item['top_keywords']))
+                print("画像数:", item.get('images'))
+                print("リンク数:", item.get('links'))
+                print("本文:　", item['text'])
+                print("-" * 80)
 
         unit = "文字" if args.analysis_mode == 'char' else "トークン"
         enc = tiktoken.get_encoding("cl100k_base") if args.analysis_mode != 'char' else None
@@ -1009,6 +1522,22 @@ def main():
                 print(f"[{cnt}件] {repr(title)}")
         else:
             print("（該当なし）")
+        instructions, err = generate_blog_instruction(
+            args.keyword, results, common_subs, title_ranks
+        )
+        if instructions:
+            print("=== ブログ作成指示書 ===")
+            print(instructions)
+            blog_post, err2 = generate_blog_post(args.keyword, instructions)
+            if blog_post:
+                print("=== 生成ブログ記事 ===")
+                print(blog_post)
+                path = save_blog_markdown(blog_post, args.keyword)
+                print(f"Markdownとして保存: {path}")
+            else:
+                logging.info("Blog generation failed: %s", err2)
+        else:
+            logging.info("Instruction generation failed: %s", err)
 
         logging.info("Finished. results=%d", len(results))
     else:

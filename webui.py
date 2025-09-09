@@ -1,7 +1,12 @@
-from typing import Dict
-from flask import Flask, render_template, request
+from typing import List
+from flask import Flask, render_template, request, url_for, Response, stream_with_context, jsonify
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import markdown
+import json
+import queue
+import uuid
 
 from scraper import (
     create_session,
@@ -14,73 +19,155 @@ from scraper import (
     rank_common_titles,
     filter_common_phrases,
     parse_exclude_lines,
+    analyze_keywords,
+    generate_blog_instruction,
+    generate_blog_post,
+    generate_similar_keywords,
+    ollama_chat_stream,
+    save_blog_markdown,
+    markdown_to_html_ai,
+    save_report_markdown,
+    save_scrape_json,
+    have_ollama_model,
+)
+
+from prompts import (
+    build_instruction_messages,
+    build_blog_messages,
+    build_review_messages,
+    build_revise_messages,
 )
 
 app = Flask(__name__)
 
+last_state = {}
+logs_lock = threading.Lock()
+sessions: dict = {}
+sessions_lock = threading.Lock()
 
-def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
-                 analyze_chars: int, max_common_ratio: float, analysis_mode: str,
-                 workers: int, remove_trans, remove_patterns):
+
+def get_histories():
+    base = os.path.join(os.path.dirname(__file__), 'static')
+    def list_dir(sub, ext):
+        dir_path = os.path.join(base, sub)
+        if not os.path.isdir(dir_path):
+            return []
+        files = [f for f in os.listdir(dir_path) if f.endswith(ext)]
+        return sorted(files, reverse=True)
+    return {
+        'scrapes': list_dir('scrapes', '.json'),
+        'reports': list_dir('reports', '.md'),
+        'blogs': list_dir('blogs', '.md'),
+    }
+
+
+def process_url_proc(args):
+    url, analyze_chars, merge_percent = args
+    session = create_session()
+    domain = extract_domain(url)
+    if not robots_exists(session, url):
+        return {"status": "robots"}
+    html = fetch_html(session, url)
+    if not html:
+        return {"status": "fail"}
+    data = parse_html(html)
+    word_count, top_keywords = analyze_keywords(
+        data["text"], merge_threshold=merge_percent / 100.0
+    )
+    row = {
+        "url": url,
+        "domain": domain,
+        "published_time": data["published_time"],
+        "title": data["title"],
+        "description": data["description"],
+        "robots": True,
+        "images": data["images"],
+        "links": data["links"],
+        "word_count": word_count,
+        "top_keywords": top_keywords,
+        "headings": data.get("headings", []),
+        "text": data["text"][:analyze_chars],
+    }
+    return {"status": "ok", "row": row, "text": data["text"], "title": data["title"]}
+
+
+def run_analysis(
+    keyword: str,
+    num_results: int,
+    delay: float,
+    rank_k: int,
+    analyze_chars: int,
+    max_common_ratio: float,
+    analysis_mode: str,
+    workers: int,
+    remove_trans,
+    remove_patterns,
+    merge_percent: float,
+    generate_report: bool,
+    generate_blog: bool,
+    body_match: bool,
+    report_prompt: str = "",
+    blog_prompt: str = "",
+    blog_style: str = "",
+    human_mode: bool = False,
+    model: str = "gpt-oss:20b",
+    log_cb=None,
+):
     """検索と解析を実行し結果を返す"""
-    urls = get_search_results(keyword, num_results, delay)
-    robots_cache: Dict[str, bool] = {}
-    robots_lock = threading.Lock()
-    results = []
-    texts = []
-    titles = []
+    logs: List[str] = []
+    def log(message: str):
+        if log_cb:
+            log_cb(message)
+        logs.append(message)
+    urls = []
+    keywords = [k.strip() for k in keyword.splitlines() if k.strip()]
+    for kw in keywords:
+        log(f"Google検索に問い合わせ中: {kw}")
+        res = get_search_results(kw, num_results, delay)
+        log(f"検索結果を{len(res)}件取得しました: {kw}")
+        urls.extend(res)
+    results: List[dict] = []
+    texts: List[str] = []
+    titles: List[str] = []
 
-    def process_url(url: str):
-        session = create_session()
-        domain = extract_domain(url)
-        with robots_lock:
-            robots = robots_cache.get(domain)
-        if robots is None:
-            robots = robots_exists(session, url)
-            with robots_lock:
-                robots_cache[domain] = robots
-        if not robots:
-            return None
-        html = fetch_html(session, url)
-        if not html:
-            return None
-        data = parse_html(html)
-        row = {
-            "url": url,
-            "domain": domain,
-            "published_time": data["published_time"],
-            "title": data["title"],
-            "robots": robots,
-            "text": data["text"][:analyze_chars],
-        }
-        return row, data["text"], data["title"]
-
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [ex.submit(process_url, u) for u in urls]
-        for fut in as_completed(futures):
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        future_map = {}
+        for u in urls:
+            log(f"スクレイピング開始: {u}")
+            future_map[ex.submit(process_url_proc, (u, analyze_chars, merge_percent))] = u
+        for fut in as_completed(future_map):
+            url = future_map[fut]
             res = fut.result()
-            if res:
-                row, text, title = res
+            status = res.get("status")
+            if status == "ok":
+                row = res["row"]
                 results.append(row)
-                texts.append(text)
-                titles.append(title)
+                texts.append(res["text"])
+                titles.append(res["title"])
+                log(f"スクレイピング完了: {url}")
+            elif status == "robots":
+                log(f"robots.txtでアクセス拒否: {url}")
+            else:
+                log(f"取得失敗: {url}")
 
     # まず多めに候補を取得し、フィルタ後に上位 rank_k 件へ絞り込む
-    raw_subs = common_substrings_rank(
-        texts,
-        analyze_chars=analyze_chars,
-        top_k=rank_k * 3,
-        remove_trans=remove_trans,
-        remove_patterns=remove_patterns,
-        max_doc_ratio=max_common_ratio,
-        mode=analysis_mode,
-    )
-    filtered = filter_common_phrases(raw_subs, keyword)[:rank_k]
-    total_docs = len(texts) if texts else 1
-    common_subs = [
-        {"text": sub, "count": cnt, "ratio": cnt / total_docs}
-        for sub, cnt in filtered
-    ]
+    common_subs = []
+    if body_match:
+        raw_subs = common_substrings_rank(
+            texts,
+            analyze_chars=analyze_chars,
+            top_k=rank_k * 3,
+            remove_trans=remove_trans,
+            remove_patterns=remove_patterns,
+            max_doc_ratio=max_common_ratio,
+            mode=analysis_mode,
+        )
+        filtered = filter_common_phrases(raw_subs, keyword)[:rank_k]
+        total_docs = len(texts) if texts else 1
+        common_subs = [
+            {"text": sub, "count": cnt, "ratio": cnt / total_docs}
+            for sub, cnt in filtered
+        ]
     title_ranks = rank_common_titles(
         titles,
         top_k=rank_k,
@@ -88,45 +175,989 @@ def run_analysis(keyword: str, num_results: int, delay: float, rank_k: int,
         remove_patterns=remove_patterns,
         mode=analysis_mode,
     )
-    return results, common_subs, title_ranks
+    instructions = None
+    if generate_report:
+        if have_ollama_model(model):
+            with logs_lock:
+                logs.append("Ollamaで指示書生成をリクエストしています")
+            instructions, err = generate_blog_instruction(
+                keyword, results, common_subs, title_ranks, report_prompt,
+                model=model,
+                timeout=690 if model == "gpt-oss:120b" else 160,
+            )
+            if instructions:
+                with logs_lock:
+                    logs.append("指示書を生成しました")
+            else:
+                with logs_lock:
+                    logs.append(f"指示書生成失敗: {err}")
+        else:
+            with logs_lock:
+                logs.append(f"{model}が見つからないため指示書生成をスキップしました")
+    else:
+        with logs_lock:
+            logs.append("指示書生成をスキップしました")
+    blog_post = None
+    blog_file = None
+    if generate_blog:
+        if instructions:
+            if have_ollama_model(model):
+                try:
+                    with logs_lock:
+                        logs.append("Ollamaでブログ生成をリクエストしています")
+                    blog_post, err = generate_blog_post(
+                        keyword,
+                        instructions,
+                        blog_prompt,
+                        style=blog_style,
+                        human_mode=human_mode,
+                        model=model,
+                        timeout=690 if model == "gpt-oss:120b" else 160,
+                    )
+                    if blog_post:
+                        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+                        path = save_blog_markdown(blog_post, keyword, directory=static_dir)
+                        blog_file = os.path.basename(path)
+                        with logs_lock:
+                            logs.append("ブログ記事を保存しました")
+                    else:
+                        with logs_lock:
+                            logs.append(f"ブログ生成失敗: {err}")
+                except Exception as e:
+                    with logs_lock:
+                        logs.append(f"ブログ生成エラー: {e}")
+            else:
+                with logs_lock:
+                    logs.append(f"{model}が見つからないためブログ生成をスキップしました")
+        else:
+            with logs_lock:
+                logs.append("指示書がないためブログ生成をスキップしました")
+    else:
+        with logs_lock:
+            logs.append("ブログ生成をスキップしました")
+    return results, common_subs, title_ranks, instructions, blog_post, blog_file, logs
+
+
+@app.route('/expand_keywords', methods=['POST'])
+def expand_keywords_route():
+    keyword = request.form.get('keyword', '')
+    logs: List[str] = []
+    added_all: List[str] = []
+    for line in [k.strip() for k in keyword.splitlines() if k.strip()]:
+        extra, err = generate_similar_keywords(line)
+        if extra:
+            added_all.extend(extra)
+            logs.append('類似キーワードを追加: ' + ', '.join(extra))
+        else:
+            logs.append(f'類似キーワード生成失敗 ({line}): {err}')
+    if added_all:
+        if keyword and not keyword.endswith('\n'):
+            keyword += '\n'
+        keyword += '\n'.join(added_all)
+    return jsonify({'keyword': keyword, 'logs': logs})
+
+
+@app.route('/stream_analysis')
+def stream_analysis():
+    params = request.args
+    keyword = params.get('keyword', '')
+    if not keyword:
+        def gen_empty():
+            yield "data: {\"error\": \"no keyword\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    num_results = min(int(params.get('num_results', 10)), 50)
+    delay = float(params.get('delay', 0.0))
+    workers = int(params.get('workers', os.cpu_count() or 1))
+    analyze_chars = int(params.get('analyze_chars', 5000))
+    rank_k = int(params.get('rank_k', 15))
+    max_common_ratio = float(params.get('max_common_ratio', 0.8))
+    analysis_mode = params.get('analysis_mode', 'tiktoken')
+    merge_percent = float(params.get('merge_percent', 18.0))
+    excl_lines = params.get('exclude_patterns', '').splitlines()
+    _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
+    skip_common = params.get('skip_common') in ('1', 'on', 'true')
+    q: "queue.Queue" = queue.Queue()
+
+    def log_cb(msg: str):
+        q.put({'log': msg})
+
+    def worker():
+        res = run_analysis(
+            keyword,
+            num_results,
+            delay,
+            rank_k,
+            analyze_chars,
+            max_common_ratio,
+            analysis_mode,
+            workers,
+            remove_trans,
+            remove_patterns,
+            merge_percent,
+            generate_report=False,
+            generate_blog=False,
+            body_match=not skip_common,
+            model='gpt-oss:20b',
+            log_cb=log_cb,
+        )
+        q.put({'done': res})
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def gen():
+        while True:
+            item = q.get()
+            if 'log' in item:
+                yield f"data: {json.dumps({'log': item['log']})}\n\n"
+            else:
+                results, common_subs, title_ranks, _, _, _, logs = item['done']
+                static_dir = os.path.join(os.path.dirname(__file__), 'static', 'scrapes')
+                save_scrape_json(results, keyword, directory=static_dir)
+                state = {
+                    'keyword': keyword,
+                    'results': results,
+                    'common_subs': common_subs,
+                    'title_ranks': title_ranks,
+                    'logs': logs,
+                    'form': params,
+                    'skip_common': skip_common,
+                    'instructions': None,
+                    'instructions_html': None,
+                    'report_file': None,
+                    'blog_post': None,
+                    'blog_html': None,
+                    'blog_file': None,
+                    'info_blog_post': None,
+                    'info_blog_html': None,
+                    'info_blog_file': None,
+                    'info_html_mode': False,
+                    'report_prompt': '',
+                    'blog_prompt': '',
+                    'blog_style': '標準',
+                    'human_mode': False,
+                    'html_mode': False,
+                    'blog_review': None,
+                    'blog_review_html': None,
+                    'review_file': None,
+                    'rev_blog_post': None,
+                    'rev_blog_html': None,
+                    'rev_blog_file': None,
+                }
+                session_id = uuid.uuid4().hex
+                with sessions_lock:
+                    sessions[session_id] = state
+                global last_state
+                last_state = state
+                hist = get_histories()
+                html = render_template(
+                    'results.html',
+                    results=results,
+                    common_subs=common_subs,
+                    title_ranks=title_ranks,
+                    instructions=None,
+                    blog_post=None,
+                    blog_html=None,
+                    blog_review=None,
+                    blog_review_html=None,
+                    review_file=None,
+                    rev_blog_post=None,
+                    rev_blog_html=None,
+                    rev_blog_file=None,
+                    info_blog_post=None,
+                    logs=[],
+                    report_prompt='',
+                    blog_prompt='',
+                    blog_style='標準',
+                    human_mode=False,
+                    html_mode=False,
+                    scrape_history=hist['scrapes'],
+                    report_history=hist['reports'],
+                    blog_history=hist['blogs'],
+                )
+                payload = {'done': True, 'html': html, 'session': session_id}
+                yield f"data: {json.dumps(payload)}\n\n"
+                break
+
+    return Response(stream_with_context(gen()), mimetype='text/event-stream')
+@app.route('/stream_report')
+def stream_report():
+    session_id = request.args.get('session')
+    state = sessions.get(session_id)
+    if not state or not state.get('results'):
+        def gen_empty():
+            yield "data: {\"error\": \"no results\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    prompt = request.args.get('prompt', '')
+    hi = request.args.get('hi') == '1'
+    model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
+    timeout = 690 if hi else 160
+    if not have_ollama_model(model):
+        def gen_model():
+            yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
+        return Response(gen_model(), mimetype='text/event-stream')
+
+    results = state['results']
+    common_subs = state['common_subs']
+    title_ranks = state['title_ranks']
+    keyword = state['keyword']
+    messages = build_instruction_messages(
+        keyword,
+        results,
+        common_subs,
+        title_ranks,
+        user_prompt=prompt,
+    )
+
+    def generate():
+        yield f"data: {{\"status\": \"指示書生成を開始します\"}}\n\n"
+        buf = []
+        for token in ollama_chat_stream(model, messages, timeout=timeout):
+            buf.append(token)
+            yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
+        full = ''.join(buf)
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'reports')
+        path = save_report_markdown(full, keyword, directory=static_dir)
+        instructions_html = markdown.markdown(full, extensions=["extra"])
+        state.update({
+            'instructions': full,
+            'instructions_html': instructions_html,
+            'report_file': os.path.basename(path),
+            'report_prompt': prompt,
+        })
+        global last_state
+        last_state = state
+        done_payload = {
+            "done": True,
+            "html": instructions_html,
+            "file": os.path.basename(path),
+            "session": session_id,
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/stream_blog')
+def stream_blog():
+    session_id = request.args.get('session')
+    state = sessions.get(session_id)
+    if not state or not state.get('instructions'):
+        def gen_empty():
+            yield "data: {\"error\": \"no instructions\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    prompt = request.args.get('prompt', '')
+    style = request.args.get('style', '')
+    human = request.args.get('human') == '1'
+    info = request.args.get('info') == '1'
+    hi = request.args.get('hi') == '1'
+    model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
+    timeout = 690 if hi else 160
+    if not have_ollama_model(model):
+        def gen_model():
+            yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
+        return Response(gen_model(), mimetype='text/event-stream')
+
+    keyword = state['keyword']
+    instructions = state['instructions']
+    messages = build_blog_messages(
+        keyword,
+        instructions,
+        user_prompt=prompt,
+        style=style,
+        human_mode=human,
+        info_only=info,
+        html_mode=False,
+    )
+
+    def generate():
+        yield f"data: {{\"status\": \"ブログ生成を開始します\"}}\n\n"
+        buf = []
+        for token in ollama_chat_stream(model, messages, timeout=timeout):
+            buf.append(token)
+            yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
+        full = ''.join(buf)
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+        path = save_blog_markdown(full, keyword, directory=static_dir)
+        blog_html = markdown.markdown(full, extensions=["extra"])
+        if info:
+            state.update({
+                'info_blog_post': full,
+                'info_blog_html': blog_html,
+                'info_blog_file': os.path.basename(path),
+                'blog_prompt': prompt,
+                'blog_style': style,
+                'human_mode': human,
+                'info_html_mode': False,
+                'blog_review': None,
+                'blog_review_html': None,
+                'review_file': None,
+                'rev_blog_post': None,
+                'rev_blog_html': None,
+                'rev_blog_file': None,
+            })
+        else:
+            state.update({
+                'blog_post': full,
+                'blog_html': blog_html,
+                'blog_file': os.path.basename(path),
+                'blog_prompt': prompt,
+                'blog_style': style,
+                'human_mode': human,
+                'html_mode': False,
+                'blog_review': None,
+                'blog_review_html': None,
+                'review_file': None,
+                'rev_blog_post': None,
+                'rev_blog_html': None,
+                'rev_blog_file': None,
+            })
+        global last_state
+        last_state = state
+        done_payload = {
+            "done": True,
+            "html": blog_html,
+            "file": os.path.basename(path),
+            "html_mode": False,
+            "session": session_id,
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/stream_review')
+def stream_review():
+    session_id = request.args.get('session')
+    state = sessions.get(session_id)
+    if not state or not state.get('blog_post'):
+        def gen_empty():
+            yield "data: {\"error\": \"no blog\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    hi = request.args.get('hi') == '1'
+    model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
+    timeout = 690 if hi else 160
+    if not have_ollama_model(model):
+        def gen_model():
+            yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
+        return Response(gen_model(), mimetype='text/event-stream')
+    blog = state['blog_post']
+    keyword = state['keyword'] + "_review"
+    messages = build_review_messages(blog)
+
+    def generate():
+        yield f"data: {{\"status\": \"ブログ評価を開始します\"}}\n\n"
+        buf = []
+        for token in ollama_chat_stream(model, messages, timeout=timeout):
+            buf.append(token)
+            yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
+        full = ''.join(buf)
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+        path = save_blog_markdown(full, keyword, directory=static_dir)
+        review_html = markdown.markdown(full, extensions=["extra"])
+        state.update({
+            'blog_review': full,
+            'blog_review_html': review_html,
+            'review_file': os.path.basename(path),
+        })
+        global last_state
+        last_state = state
+        done_payload = {
+            'done': True,
+            'html': review_html,
+            'file': os.path.basename(path),
+            'html_mode': False,
+            'session': session_id,
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/stream_revise')
+def stream_revise():
+    session_id = request.args.get('session')
+    state = sessions.get(session_id)
+    if not state or not state.get('blog_post') or not state.get('blog_review'):
+        def gen_empty():
+            yield "data: {\"error\": \"no review\"}\n\n"
+        return Response(gen_empty(), mimetype='text/event-stream')
+    hi = request.args.get('hi') == '1'
+    model = 'gpt-oss:120b' if hi else 'gpt-oss:20b'
+    timeout = 690 if hi else 160
+    if not have_ollama_model(model):
+        def gen_model():
+            yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
+        return Response(gen_model(), mimetype='text/event-stream')
+    blog = state['blog_post']
+    review = state['blog_review']
+    keyword = state['keyword'] + "_revise"
+    style = state.get('blog_style', '標準')
+    human = state.get('human_mode', False)
+    messages = build_revise_messages(blog, review, style=style, human=human)
+
+    def generate():
+        yield f"data: {{\"status\": \"修正ブログ生成を開始します\"}}\n\n"
+        buf = []
+        for token in ollama_chat_stream(model, messages, timeout=timeout):
+            buf.append(token)
+            yield f"data: {{\"token\": {json.dumps(token)} }}\n\n"
+        full = ''.join(buf)
+        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+        path = save_blog_markdown(full, keyword, directory=static_dir)
+        blog_html = markdown.markdown(full, extensions=["extra"])
+        state.update({
+            'rev_blog_post': full,
+            'rev_blog_html': blog_html,
+            'rev_blog_file': os.path.basename(path),
+        })
+        global last_state
+        last_state = state
+        done_payload = {
+            'done': True,
+            'html': blog_html,
+            'file': os.path.basename(path),
+            'html_mode': False,
+            'session': session_id,
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
+    global last_state
+    cpu_count = os.cpu_count() or 4
     if request.method == 'POST':
-        keyword = request.form.get('keyword', '')
-        if keyword:
-            num_results = int(request.form.get('num_results', 10))
-            delay = float(request.form.get('delay', 0.1))
-            workers = int(request.form.get('workers', 10))
-            analyze_chars = int(request.form.get('analyze_chars', 5000))
-            rank_k = int(request.form.get('rank_k', 15))
-            max_common_ratio = float(request.form.get('max_common_ratio', 0.8))
-            analysis_mode = request.form.get('analysis_mode', 'tiktoken')
-            excl_lines = request.form.get('exclude_patterns', '').splitlines()
-            _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
-            results, common_subs, title_ranks = run_analysis(
-                keyword,
-                num_results,
-                delay,
-                rank_k,
-                analyze_chars,
-                max_common_ratio,
-                analysis_mode,
-                workers,
-                remove_trans,
-                remove_patterns,
-            )
+        action = request.form.get('action', 'scrape')
+        if action == 'expand':
+            keyword = request.form.get('keyword', '')
+            logs = []
+            added_all: List[str] = []
+            for line in [k.strip() for k in keyword.splitlines() if k.strip()]:
+                extra, err = generate_similar_keywords(line)
+                if extra:
+                    added_all.extend(extra)
+                    logs.append('類似キーワードを追加: ' + ', '.join(extra))
+                else:
+                    logs.append(f'類似キーワード生成失敗 ({line}): {err}')
+            if added_all:
+                if keyword and not keyword.endswith('\n'):
+                    keyword += '\n'
+                keyword += '\n'.join(added_all)
+            form = request.form.to_dict(flat=True)
+            form['keyword'] = keyword
+            hist = get_histories()
             return render_template(
                 'index.html',
-                results=results,
-                common_subs=common_subs,
-                title_ranks=title_ranks,
-                form=request.form,
+                results=None,
+                logs=logs,
+                form=form,
+                instructions=None,
+                instructions_html=None,
+                report_file=None,
+                blog_post=None,
+                blog_html=None,
+                blog_file=None,
+                blog_review=None,
+                blog_review_html=None,
+                review_file=None,
+                rev_blog_post=None,
+                rev_blog_html=None,
+                rev_blog_file=None,
+                info_blog_post=None,
+                info_blog_html=None,
+                info_blog_file=None,
+                info_html_mode=False,
+                report_prompt='',
+                blog_prompt='',
+                blog_style='標準',
+                human_mode=False,
+                html_mode=False,
+                scrape_history=hist['scrapes'],
+                report_history=hist['reports'],
+                blog_history=hist['blogs'],
+                cpu_count=cpu_count,
             )
-    return render_template('index.html', results=None, form=None)
+        if action == 'scrape':
+            keyword = request.form.get('keyword', '')
+            if keyword:
+                num_results = min(int(request.form.get('num_results', 10)), 50)
+                delay = float(request.form.get('delay', 0.1))
+                workers = int(request.form.get('workers', cpu_count))
+                analyze_chars = int(request.form.get('analyze_chars', 5000))
+                rank_k = int(request.form.get('rank_k', 15))
+                max_common_ratio = float(request.form.get('max_common_ratio', 0.8))
+                analysis_mode = request.form.get('analysis_mode', 'tiktoken')
+                merge_percent = float(request.form.get('merge_percent', 18.0))
+                excl_lines = request.form.get('exclude_patterns', '').splitlines()
+                _, remove_trans, remove_patterns = parse_exclude_lines(excl_lines)
+                skip_common = bool(request.form.get('skip_common'))
+                results, common_subs, title_ranks, _, _, _, logs = run_analysis(
+                    keyword,
+                    num_results,
+                    delay,
+                    rank_k,
+                    analyze_chars,
+                    max_common_ratio,
+                    analysis_mode,
+                    workers,
+                    remove_trans,
+                    remove_patterns,
+                    merge_percent,
+                    generate_report=False,
+                    generate_blog=False,
+                    body_match=not skip_common,
+                    model="gpt-oss:20b",
+                )
+                static_dir = os.path.join(os.path.dirname(__file__), 'static', 'scrapes')
+                save_scrape_json(results, keyword, directory=static_dir)
+                last_state = {
+                    'keyword': keyword,
+                    'results': results,
+                    'common_subs': common_subs,
+                    'title_ranks': title_ranks,
+                    'logs': logs,
+                    'form': request.form,
+                    'skip_common': skip_common,
+                    'instructions': None,
+                    'instructions_html': None,
+                    'report_file': None,
+                    'blog_post': None,
+                    'blog_html': None,
+                    'blog_file': None,
+                    'info_blog_post': None,
+                    'info_blog_html': None,
+                    'info_blog_file': None,
+                    'info_html_mode': False,
+                    'report_prompt': '',
+                    'blog_prompt': '',
+                    'blog_style': '標準',
+                    'human_mode': False,
+                    'html_mode': False,
+                    'blog_review': None,
+                    'blog_review_html': None,
+                    'review_file': None,
+                    'rev_blog_post': None,
+                    'rev_blog_html': None,
+                    'rev_blog_file': None,
+                }
+                hist = get_histories()
+                return render_template(
+                    'index.html',
+                    results=results,
+                    common_subs=common_subs,
+                    title_ranks=title_ranks,
+                    instructions=None,
+                    instructions_html=None,
+                    report_file=None,
+                    blog_post=None,
+                    blog_html=None,
+                    blog_file=None,
+                    blog_review=None,
+                    blog_review_html=None,
+                    review_file=None,
+                    rev_blog_post=None,
+                    rev_blog_html=None,
+                    rev_blog_file=None,
+                    info_blog_post=None,
+                    info_blog_html=None,
+                    info_blog_file=None,
+                    info_html_mode=False,
+                    logs=logs,
+                    form=request.form,
+                    report_prompt='',
+                    blog_prompt='',
+                    blog_style='標準',
+                    human_mode=False,
+                    html_mode=False,
+                    scrape_history=hist['scrapes'],
+                    report_history=hist['reports'],
+                    blog_history=hist['blogs'],
+                    cpu_count=cpu_count,
+                )
+        elif action == 'report' and last_state.get('results'):
+            logs = last_state.get('logs', []).copy()
+            keyword = last_state['keyword']
+            report_prompt = request.form.get('report_prompt', '')
+            hi_model = bool(request.form.get('hi_model'))
+            model = "gpt-oss:120b" if hi_model else "gpt-oss:20b"
+            timeout = 690 if hi_model else 160
+            if have_ollama_model(model):
+                logs.append("Ollamaで指示書生成をリクエストしています")
+                instructions, err = generate_blog_instruction(
+                    keyword,
+                    last_state['results'],
+                    last_state['common_subs'],
+                    last_state['title_ranks'],
+                    report_prompt,
+                    model=model,
+                    timeout=timeout,
+                )
+                if instructions:
+                    static_dir = os.path.join(os.path.dirname(__file__), 'static', 'reports')
+                    path = save_report_markdown(instructions, keyword, directory=static_dir)
+                    report_file = os.path.basename(path)
+                    logs.append("レポートを保存しました")
+                else:
+                    report_file = None
+                    logs.append(f"指示書生成失敗: {err}")
+            else:
+                instructions = None
+                report_file = None
+                logs.append(f"{model}が見つからないため指示書生成をスキップしました")
+            instructions_html = (
+                markdown.markdown(instructions, extensions=["extra"])
+                if instructions
+                else None
+            )
+            last_state.update({
+                'instructions': instructions,
+                'instructions_html': instructions_html,
+                'report_file': report_file,
+                'logs': logs,
+                'report_prompt': report_prompt,
+                'blog_post': None,
+                'blog_html': None,
+                'blog_file': None,
+                'info_blog_post': None,
+                'info_blog_html': None,
+                'info_blog_file': None,
+                'info_html_mode': False,
+                'blog_review': None,
+                'blog_review_html': None,
+                'review_file': None,
+                'rev_blog_post': None,
+                'rev_blog_html': None,
+                'rev_blog_file': None,
+            })
+            hist = get_histories()
+            return render_template(
+                'index.html',
+                results=last_state['results'],
+                common_subs=last_state['common_subs'],
+                title_ranks=last_state['title_ranks'],
+                instructions=instructions,
+                instructions_html=instructions_html,
+                report_file=report_file,
+                blog_post=None,
+                blog_html=None,
+                blog_file=None,
+                blog_review=last_state.get('blog_review'),
+                blog_review_html=last_state.get('blog_review_html'),
+                review_file=last_state.get('review_file'),
+                rev_blog_post=last_state.get('rev_blog_post'),
+                rev_blog_html=last_state.get('rev_blog_html'),
+                rev_blog_file=last_state.get('rev_blog_file'),
+                info_blog_post=last_state.get('info_blog_post'),
+                info_blog_html=last_state.get('info_blog_html'),
+                info_blog_file=last_state.get('info_blog_file'),
+                logs=logs,
+                form=last_state.get('form'),
+                report_prompt=report_prompt,
+                blog_prompt='',
+                blog_style=last_state.get('blog_style', '標準'),
+                human_mode=last_state.get('human_mode', False),
+                html_mode=last_state.get('html_mode', False),
+                scrape_history=hist['scrapes'],
+                report_history=hist['reports'],
+                blog_history=hist['blogs'],
+                cpu_count=cpu_count,
+            )
+        elif action == 'blog' and last_state.get('instructions'):
+            logs = last_state.get('logs', []).copy()
+            keyword = last_state['keyword']
+            blog_prompt = request.form.get('blog_prompt', '')
+            blog_style = request.form.get('blog_style', '標準')
+            human_mode = bool(request.form.get('human_mode'))
+            hi_model = bool(request.form.get('hi_model'))
+            model = "gpt-oss:120b" if hi_model else "gpt-oss:20b"
+            timeout = 690 if hi_model else 160
+            if have_ollama_model(model):
+                logs.append("Ollamaでブログ生成をリクエストしています")
+                blog_post, err = generate_blog_post(
+                    keyword,
+                    last_state['instructions'],
+                    blog_prompt,
+                    style=blog_style,
+                    human_mode=human_mode,
+                    model=model,
+                    timeout=timeout,
+                )
+                if blog_post:
+                    static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+                    path = save_blog_markdown(blog_post, keyword, directory=static_dir)
+                    blog_file = os.path.basename(path)
+                    logs.append("ブログ記事を保存しました")
+                else:
+                    blog_file = None
+                    logs.append(f"ブログ生成失敗: {err}")
+            else:
+                blog_post = None
+                blog_file = None
+                logs.append(f"{model}が見つからないためブログ生成をスキップしました")
+            blog_html = markdown.markdown(blog_post, extensions=["extra"]) if blog_post else None
+            last_state.update({
+                'blog_post': blog_post,
+                'blog_html': blog_html,
+                'blog_file': blog_file,
+                'logs': logs,
+                'blog_prompt': blog_prompt,
+                'blog_style': blog_style,
+                'human_mode': human_mode,
+                'html_mode': False,
+                'blog_review': None,
+                'blog_review_html': None,
+                'review_file': None,
+                'rev_blog_post': None,
+                'rev_blog_html': None,
+                'rev_blog_file': None,
+            })
+            hist = get_histories()
+            return render_template(
+                'index.html',
+                results=last_state['results'],
+                common_subs=last_state['common_subs'],
+                title_ranks=last_state['title_ranks'],
+                instructions=last_state.get('instructions'),
+                instructions_html=last_state.get('instructions_html'),
+                report_file=last_state.get('report_file'),
+                blog_post=blog_post,
+                blog_html=blog_html,
+                blog_file=blog_file,
+                blog_review=last_state.get('blog_review'),
+                blog_review_html=last_state.get('blog_review_html'),
+                review_file=last_state.get('review_file'),
+                rev_blog_post=last_state.get('rev_blog_post'),
+                rev_blog_html=last_state.get('rev_blog_html'),
+                rev_blog_file=last_state.get('rev_blog_file'),
+                info_blog_post=last_state.get('info_blog_post'),
+                info_blog_html=last_state.get('info_blog_html'),
+                info_blog_file=last_state.get('info_blog_file'),
+                info_html_mode=last_state.get('info_html_mode', False),
+                logs=logs,
+                form=last_state.get('form'),
+                report_prompt=last_state.get('report_prompt', ''),
+                blog_prompt=blog_prompt,
+                blog_style=blog_style,
+                human_mode=human_mode,
+                html_mode=False,
+                scrape_history=hist['scrapes'],
+                report_history=hist['reports'],
+                blog_history=hist['blogs'],
+                cpu_count=cpu_count,
+            )
+        elif action == 'convert_html' and last_state.get('blog_post'):
+            logs = last_state.get('logs', []).copy()
+            keyword = last_state['keyword']
+            html, err = markdown_to_html_ai(last_state['blog_post'])
+            if html:
+                static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+                path = save_blog_markdown(html, keyword, directory=static_dir, html=True)
+                blog_file = os.path.basename(path)
+                logs.append("MarkdownをHTMLに変換しました")
+                last_state.update({'blog_html': html, 'blog_file': blog_file, 'html_mode': True, 'logs': logs})
+            else:
+                blog_file = last_state.get('blog_file')
+                logs.append(f"HTML化失敗: {err}")
+                last_state.update({'logs': logs})
+                hist = get_histories()
+                return render_template(
+                    'index.html',
+                    results=last_state['results'],
+                    common_subs=last_state['common_subs'],
+                    title_ranks=last_state['title_ranks'],
+                    instructions=last_state.get('instructions'),
+                    instructions_html=last_state.get('instructions_html'),
+                    report_file=last_state.get('report_file'),
+                    blog_post=last_state.get('blog_post'),
+                    blog_html=last_state.get('blog_html'),
+                    blog_file=blog_file,
+                    blog_review=last_state.get('blog_review'),
+                    blog_review_html=last_state.get('blog_review_html'),
+                    review_file=last_state.get('review_file'),
+                    rev_blog_post=last_state.get('rev_blog_post'),
+                    rev_blog_html=last_state.get('rev_blog_html'),
+                    rev_blog_file=last_state.get('rev_blog_file'),
+                    info_blog_post=last_state.get('info_blog_post'),
+                    info_blog_html=last_state.get('info_blog_html'),
+                    info_blog_file=last_state.get('info_blog_file'),
+                    info_html_mode=last_state.get('info_html_mode', False),
+                    logs=logs,
+                    form=last_state.get('form'),
+                    report_prompt=last_state.get('report_prompt', ''),
+                    blog_prompt=last_state.get('blog_prompt', ''),
+                    blog_style=last_state.get('blog_style', '標準'),
+                    human_mode=last_state.get('human_mode', False),
+                    html_mode=last_state.get('html_mode', False),
+                    scrape_history=hist['scrapes'],
+                    report_history=hist['reports'],
+                    blog_history=hist['blogs'],
+                    cpu_count=cpu_count,
+                )
+            hist = get_histories()
+            return render_template(
+                'index.html',
+                results=last_state['results'],
+                common_subs=last_state['common_subs'],
+                title_ranks=last_state['title_ranks'],
+                instructions=last_state.get('instructions'),
+                instructions_html=last_state.get('instructions_html'),
+                report_file=last_state.get('report_file'),
+                blog_post=last_state.get('blog_post'),
+                blog_html=html,
+                blog_file=blog_file,
+                blog_review=last_state.get('blog_review'),
+                blog_review_html=last_state.get('blog_review_html'),
+                review_file=last_state.get('review_file'),
+                rev_blog_post=last_state.get('rev_blog_post'),
+                rev_blog_html=last_state.get('rev_blog_html'),
+                rev_blog_file=last_state.get('rev_blog_file'),
+                info_blog_post=last_state.get('info_blog_post'),
+                info_blog_html=last_state.get('info_blog_html'),
+                info_blog_file=last_state.get('info_blog_file'),
+                info_html_mode=last_state.get('info_html_mode', False),
+                logs=logs,
+                form=last_state.get('form'),
+                report_prompt=last_state.get('report_prompt', ''),
+                blog_prompt=last_state.get('blog_prompt', ''),
+                blog_style=last_state.get('blog_style', '標準'),
+                human_mode=last_state.get('human_mode', False),
+                html_mode=True,
+                scrape_history=hist['scrapes'],
+                report_history=hist['reports'],
+                blog_history=hist['blogs'],
+                cpu_count=cpu_count,
+            )
+        elif action == 'blog_info' and last_state.get('results'):
+            logs = last_state.get('logs', []).copy()
+            keyword = last_state['keyword']
+            blog_prompt = request.form.get('blog_prompt', '')
+            blog_style = request.form.get('blog_style', '標準')
+            human_mode = bool(request.form.get('human_mode'))
+            hi_model = bool(request.form.get('hi_model'))
+            model = "gpt-oss:120b" if hi_model else "gpt-oss:20b"
+            timeout = 690 if hi_model else 160
+            if have_ollama_model(model):
+                logs.append("Ollamaで指示書生成をリクエストしています(情報提供)")
+                instructions, err = generate_blog_instruction(
+                    keyword,
+                    last_state['results'],
+                    last_state['common_subs'],
+                    last_state['title_ranks'],
+                    last_state.get('report_prompt', ''),
+                    info_only=True,
+                    model=model,
+                    timeout=timeout,
+                )
+                if instructions:
+                    logs.append("指示書を生成しました")
+                    logs.append("Ollamaでブログ生成をリクエストしています(情報提供)")
+                    blog_post, err = generate_blog_post(
+                        keyword,
+                        instructions,
+                        blog_prompt,
+                        style=blog_style,
+                        human_mode=human_mode,
+                        info_only=True,
+                        model=model,
+                        timeout=timeout,
+                    )
+                    if blog_post:
+                        static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
+                        path = save_blog_markdown(blog_post, keyword, directory=static_dir)
+                        blog_file = os.path.basename(path)
+                        logs.append("情報提供ブログ記事を保存しました")
+                    else:
+                        blog_file = None
+                        logs.append(f"ブログ生成失敗: {err}")
+                else:
+                    blog_post = None
+                    blog_file = None
+                    logs.append(f"指示書生成失敗: {err}")
+            else:
+                blog_post = None
+                blog_file = None
+                logs.append(f"{model}が見つからないためブログ生成をスキップしました")
+            blog_html = markdown.markdown(blog_post, extensions=["extra"]) if blog_post else None
+            last_state.update({
+                'info_blog_post': blog_post,
+                'info_blog_html': blog_html,
+                'info_blog_file': blog_file,
+                'logs': logs,
+                'blog_prompt': blog_prompt,
+                'blog_style': blog_style,
+                'human_mode': human_mode,
+                'info_html_mode': False,
+            })
+            hist = get_histories()
+            return render_template(
+                'index.html',
+                results=last_state['results'],
+                common_subs=last_state['common_subs'],
+                title_ranks=last_state['title_ranks'],
+                instructions=last_state.get('instructions'),
+                instructions_html=last_state.get('instructions_html'),
+                report_file=last_state.get('report_file'),
+                blog_post=last_state.get('blog_post'),
+                blog_html=last_state.get('blog_html'),
+                blog_file=last_state.get('blog_file'),
+                blog_review=last_state.get('blog_review'),
+                blog_review_html=last_state.get('blog_review_html'),
+                review_file=last_state.get('review_file'),
+                rev_blog_post=last_state.get('rev_blog_post'),
+                rev_blog_html=last_state.get('rev_blog_html'),
+                rev_blog_file=last_state.get('rev_blog_file'),
+                info_blog_post=blog_post,
+                info_blog_html=blog_html,
+                info_blog_file=blog_file,
+                info_html_mode=last_state.get('info_html_mode', False),
+                logs=logs,
+                form=last_state.get('form'),
+                report_prompt=last_state.get('report_prompt', ''),
+                blog_prompt=blog_prompt,
+                blog_style=blog_style,
+                human_mode=human_mode,
+                html_mode=last_state.get('html_mode', False),
+                scrape_history=hist['scrapes'],
+                report_history=hist['reports'],
+                blog_history=hist['blogs'],
+                cpu_count=cpu_count,
+            )
+    hist = get_histories()
+    return render_template(
+        'index.html',
+        results=None,
+        form=None,
+        instructions=None,
+        instructions_html=None,
+        report_file=None,
+        blog_post=None,
+        blog_html=None,
+        blog_file=None,
+        blog_review=None,
+        blog_review_html=None,
+        review_file=None,
+        rev_blog_post=None,
+        rev_blog_html=None,
+        rev_blog_file=None,
+        info_blog_post=None,
+        info_blog_html=None,
+        info_blog_file=None,
+        info_html_mode=False,
+        logs=None,
+        report_prompt='',
+        blog_prompt='',
+        blog_style='標準',
+        human_mode=False,
+        html_mode=False,
+        scrape_history=hist['scrapes'],
+        report_history=hist['reports'],
+        blog_history=hist['blogs'],
+        cpu_count=cpu_count,
+    )
 
 
 if __name__ == '__main__':
-    app.run(port=5000)
+    app.run(host='0.0.0.0', port=5007)
 
