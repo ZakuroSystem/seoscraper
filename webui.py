@@ -34,6 +34,7 @@ from scraper import (
 app = Flask(__name__)
 
 last_state = {}
+logs_lock = threading.Lock()
 
 
 def get_histories():
