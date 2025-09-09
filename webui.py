@@ -6,6 +6,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import markdown
 import json
 import queue
+import uuid
 
 from scraper import (
     create_session,
@@ -41,6 +42,8 @@ app = Flask(__name__)
 
 last_state = {}
 logs_lock = threading.Lock()
+sessions: dict = {}
+sessions_lock = threading.Lock()
 
 
 def get_histories():
@@ -310,7 +313,7 @@ def stream_analysis():
                 results, common_subs, title_ranks, _, _, _, logs = item['done']
                 static_dir = os.path.join(os.path.dirname(__file__), 'static', 'scrapes')
                 save_scrape_json(results, keyword, directory=static_dir)
-                last_state.update({
+                state = {
                     'keyword': keyword,
                     'results': results,
                     'common_subs': common_subs,
@@ -339,7 +342,12 @@ def stream_analysis():
                     'rev_blog_post': None,
                     'rev_blog_html': None,
                     'rev_blog_file': None,
-                })
+                }
+                session_id = uuid.uuid4().hex
+                with sessions_lock:
+                    sessions[session_id] = state
+                global last_state
+                last_state = state
                 hist = get_histories()
                 html = render_template(
                     'results.html',
@@ -366,14 +374,16 @@ def stream_analysis():
                     report_history=hist['reports'],
                     blog_history=hist['blogs'],
                 )
-                payload = {'done': True, 'html': html}
+                payload = {'done': True, 'html': html, 'session': session_id}
                 yield f"data: {json.dumps(payload)}\n\n"
                 break
 
     return Response(stream_with_context(gen()), mimetype='text/event-stream')
 @app.route('/stream_report')
 def stream_report():
-    if not last_state.get('results'):
+    session_id = request.args.get('session')
+    state = sessions.get(session_id)
+    if not state or not state.get('results'):
         def gen_empty():
             yield "data: {\"error\": \"no results\"}\n\n"
         return Response(gen_empty(), mimetype='text/event-stream')
@@ -386,10 +396,10 @@ def stream_report():
             yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
         return Response(gen_model(), mimetype='text/event-stream')
 
-    results = last_state['results']
-    common_subs = last_state['common_subs']
-    title_ranks = last_state['title_ranks']
-    keyword = last_state['keyword']
+    results = state['results']
+    common_subs = state['common_subs']
+    title_ranks = state['title_ranks']
+    keyword = state['keyword']
     messages = build_instruction_messages(
         keyword,
         results,
@@ -408,16 +418,19 @@ def stream_report():
         static_dir = os.path.join(os.path.dirname(__file__), 'static', 'reports')
         path = save_report_markdown(full, keyword, directory=static_dir)
         instructions_html = markdown.markdown(full, extensions=["extra"])
-        last_state.update({
+        state.update({
             'instructions': full,
             'instructions_html': instructions_html,
             'report_file': os.path.basename(path),
             'report_prompt': prompt,
         })
+        global last_state
+        last_state = state
         done_payload = {
             "done": True,
             "html": instructions_html,
             "file": os.path.basename(path),
+            "session": session_id,
         }
         yield f"data: {json.dumps(done_payload)}\n\n"
 
@@ -426,7 +439,9 @@ def stream_report():
 
 @app.route('/stream_blog')
 def stream_blog():
-    if not last_state.get('instructions'):
+    session_id = request.args.get('session')
+    state = sessions.get(session_id)
+    if not state or not state.get('instructions'):
         def gen_empty():
             yield "data: {\"error\": \"no instructions\"}\n\n"
         return Response(gen_empty(), mimetype='text/event-stream')
@@ -442,8 +457,8 @@ def stream_blog():
             yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
         return Response(gen_model(), mimetype='text/event-stream')
 
-    keyword = last_state['keyword']
-    instructions = last_state['instructions']
+    keyword = state['keyword']
+    instructions = state['instructions']
     messages = build_blog_messages(
         keyword,
         instructions,
@@ -465,7 +480,7 @@ def stream_blog():
         path = save_blog_markdown(full, keyword, directory=static_dir)
         blog_html = markdown.markdown(full, extensions=["extra"])
         if info:
-            last_state.update({
+            state.update({
                 'info_blog_post': full,
                 'info_blog_html': blog_html,
                 'info_blog_file': os.path.basename(path),
@@ -481,7 +496,7 @@ def stream_blog():
                 'rev_blog_file': None,
             })
         else:
-            last_state.update({
+            state.update({
                 'blog_post': full,
                 'blog_html': blog_html,
                 'blog_file': os.path.basename(path),
@@ -496,11 +511,14 @@ def stream_blog():
                 'rev_blog_html': None,
                 'rev_blog_file': None,
             })
+        global last_state
+        last_state = state
         done_payload = {
             "done": True,
             "html": blog_html,
             "file": os.path.basename(path),
             "html_mode": False,
+            "session": session_id,
         }
         yield f"data: {json.dumps(done_payload)}\n\n"
 
@@ -509,7 +527,9 @@ def stream_blog():
 
 @app.route('/stream_review')
 def stream_review():
-    if not last_state.get('blog_post'):
+    session_id = request.args.get('session')
+    state = sessions.get(session_id)
+    if not state or not state.get('blog_post'):
         def gen_empty():
             yield "data: {\"error\": \"no blog\"}\n\n"
         return Response(gen_empty(), mimetype='text/event-stream')
@@ -520,8 +540,8 @@ def stream_review():
         def gen_model():
             yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
         return Response(gen_model(), mimetype='text/event-stream')
-    blog = last_state['blog_post']
-    keyword = last_state['keyword'] + "_review"
+    blog = state['blog_post']
+    keyword = state['keyword'] + "_review"
     messages = build_review_messages(blog)
 
     def generate():
@@ -534,16 +554,19 @@ def stream_review():
         static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
         path = save_blog_markdown(full, keyword, directory=static_dir)
         review_html = markdown.markdown(full, extensions=["extra"])
-        last_state.update({
+        state.update({
             'blog_review': full,
             'blog_review_html': review_html,
             'review_file': os.path.basename(path),
         })
+        global last_state
+        last_state = state
         done_payload = {
             'done': True,
             'html': review_html,
             'file': os.path.basename(path),
             'html_mode': False,
+            'session': session_id,
         }
         yield f"data: {json.dumps(done_payload)}\n\n"
 
@@ -552,7 +575,9 @@ def stream_review():
 
 @app.route('/stream_revise')
 def stream_revise():
-    if not last_state.get('blog_post') or not last_state.get('blog_review'):
+    session_id = request.args.get('session')
+    state = sessions.get(session_id)
+    if not state or not state.get('blog_post') or not state.get('blog_review'):
         def gen_empty():
             yield "data: {\"error\": \"no review\"}\n\n"
         return Response(gen_empty(), mimetype='text/event-stream')
@@ -563,11 +588,11 @@ def stream_revise():
         def gen_model():
             yield f"data: {{\"error\": \"{model} not available\"}}\n\n"
         return Response(gen_model(), mimetype='text/event-stream')
-    blog = last_state['blog_post']
-    review = last_state['blog_review']
-    keyword = last_state['keyword'] + "_revise"
-    style = last_state.get('blog_style', '標準')
-    human = last_state.get('human_mode', False)
+    blog = state['blog_post']
+    review = state['blog_review']
+    keyword = state['keyword'] + "_revise"
+    style = state.get('blog_style', '標準')
+    human = state.get('human_mode', False)
     messages = build_revise_messages(blog, review, style=style, human=human)
 
     def generate():
@@ -580,16 +605,19 @@ def stream_revise():
         static_dir = os.path.join(os.path.dirname(__file__), 'static', 'blogs')
         path = save_blog_markdown(full, keyword, directory=static_dir)
         blog_html = markdown.markdown(full, extensions=["extra"])
-        last_state.update({
+        state.update({
             'rev_blog_post': full,
             'rev_blog_html': blog_html,
             'rev_blog_file': os.path.basename(path),
         })
+        global last_state
+        last_state = state
         done_payload = {
             'done': True,
             'html': blog_html,
             'file': os.path.basename(path),
             'html_mode': False,
+            'session': session_id,
         }
         yield f"data: {json.dumps(done_payload)}\n\n"
 
